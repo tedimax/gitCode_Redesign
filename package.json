@@ -1,0 +1,16 @@
+{
+  "name": "gitcode_redesign",
+  "version": "1.0.0",
+  "description": "This directory contains the foundational classes and utilities for the Virtual Column mapping architecture.",
+  "main": "010_Constants.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/google-apps-script": "^2.0.8"
+  }
+}

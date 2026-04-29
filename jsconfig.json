@@ -1,0 +1,15 @@
+{
+    "compilerOptions": {
+        "checkJs": true,
+        "target": "ES6",
+        "lib": [
+            "ESNext",
+            "ES2023"
+        ],
+    },
+    "include": [
+        "**/*.gs",
+        "**/*.js",
+        "**/*.d.ts"
+    ]
+}

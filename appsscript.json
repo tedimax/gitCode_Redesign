@@ -1,0 +1,30 @@
+{
+  "timeZone": "Europe/London",
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+  "dependencies": {
+    "enabledAdvancedServices": [
+      {
+        "userSymbol": "Drive",
+        "serviceId": "drive",
+        "version": "v2"
+      }
+    ],
+    "libraries": [
+      {
+        "userSymbol": "vh",
+        "libraryId": "1aPqCzoPjtnWopqtlgLv3Q9oJMIR6afgj-CDJWbXfQMzbWi9_Rg0upiBD",
+        "version": "0",
+        "developmentMode": true
+      }
+    ]
+  },
+  "sheets": {
+    "macros": [
+      {
+        "menuName": "annualAll",
+        "functionName": "annualAll"
+      }
+    ]
+  }
+}

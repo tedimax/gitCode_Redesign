@@ -1,0 +1,15 @@
+# Ignore the node_modules folder
+node_modules/**
+
+# Ignore the git folder
+.git/**
+
+# Ignore your specific file (keeps it local-only)
+
+
+# Ignore config and readme files that Google doesn't need
+package.json
+package-lock.json
+README.md
+.gitignore
+*.d.ts
