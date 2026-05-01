@@ -17,7 +17,7 @@ class ImportTable extends UpdateTable {
    * Explicitly triggers the transformation engine.
    */
   importData() {
-    this.transform();
+    return this.transform();
   }
 
   /**
@@ -121,7 +121,7 @@ class ImportTable extends UpdateTable {
     }
 
     // 2. Ultra-fast aligned clone with pure functional type casting
-    this._newData = sourceWindow.map(sourceRow => {
+    return sourceWindow.map(sourceRow => {
       return sourceIndexMap.map((sourceIdx, targetIdx) => {
         const val = sourceRow[sourceIdx];
         const targetField = targetLabels[targetIdx];
@@ -130,8 +130,6 @@ class ImportTable extends UpdateTable {
         return TypeUtils.toSheetValue(TypeUtils.castType(val, type), type);
       });
     });
-
-    return true;
   }
 
   /**
@@ -151,9 +149,10 @@ class ImportTable extends UpdateTable {
 
     // --- FAST PATH: Aligned Clone ---
     if (this._canFastClone()) {
-      if (this._doFastClone(sourceSheet)) {
+      const fastResult = this._doFastClone(sourceSheet);
+      if (fastResult) {
         myLog("info", "Transformation complete via Fast Clone for %s.", this.longName);
-        return;
+        return fastResult;
       }
     }
 
@@ -187,9 +186,10 @@ class ImportTable extends UpdateTable {
     });
 
     // 2. Serialize the objects back to the new data matrix
-    this._newData = this._serializeObjectsToMatrix(targetObjects);
+    const newData = this._serializeObjectsToMatrix(targetObjects);
 
     myLog("info", "Transformation complete for %s.", this.longName);
+    return newData;
   }
 
   /**

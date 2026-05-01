@@ -18,28 +18,28 @@ class InMemoryTable extends ImportTable {
    * it flips it into the readable window matrix (this._window) making it instantly available
    * for downstream tables to use as a SourceSheet.
    */
-  commit(mode = "replace") {
+  commit(newData, mode = "replace") {
     myLog("info", "Committing InMemoryTable %s to RAM (Mode: %s)...", this.longName, mode);
 
+    if (!newData) {
+      myLog("warn", "InMemoryTable.commit called without newData. Transforming...");
+      newData = this.transform() || [];
+    }
+
     if (mode === "add" && this._window) {
-      this._window = this._window.concat(this._newData || []);
+      this._window = this._window.concat(newData);
     } else {
-      // replace, update, etc.
-      // Note: for pure 'update' logic without a physical sheet, replacing is typically safer
-      // since there is no physical state to 'update' against unless it was already fetched.
-      this._window = this._newData || [];
+      this._window = newData;
     }
 
     this.windowDataLength = this._window.length;
     
-    // Clear out the temporary buffer to free up memory
     const stats = {
-      added: this._newData ? this._newData.length : 0,
+      added: newData.length,
       updated: 0,
       removed: 0
     };
     
-    this._newData = [];
     this._isFetched = true; // Mark as populated
 
     myLog("info", "InMemoryTable %s committed %d rows to RAM successfully.", this.longName, this.windowDataLength);

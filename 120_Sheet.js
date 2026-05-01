@@ -12,8 +12,8 @@ class Sheet {
     this._config = config; // Contains sheetName, FirstRow, etc.
     this.ss = ss;
     this.longName = longName;
-    const [ssName, sheetName] = longName.split("_");
-    this.sheetName = sheetName || config.SheetName;
+    const parts = longName.split("_");
+    this.sheetName = config.SheetName || parts.slice(1).join("_");
     this.sheet = ss.getSheetByName(this.sheetName);
     
     if (!this.sheet && config.SheetType !== 'FileTable' && config.SheetType !== 'InMemoryTable') {
@@ -82,12 +82,13 @@ class Sheet {
     }
     
     const numRows = (lastRow - this.firstDataRowIndex) + 1;
+    myLog("trace", "Fetching %d rows from %s (LastRow: %d, Start: %d)", numRows, this.sheetName, lastRow, this.firstDataRowIndex);
     const rawData = this.sheet.getRange(this.firstDataRowIndex, 1, numRows, lastCol).getValues();
     
     // Use the consolidated helper to find the boundary
     const lastIdx = this._findLastPopulatedIndex(rawData);
 
-    // Cache the physical last row calculation to avoid redundant reads
+    // Cache the physical last row calculation
     this._cachedLastRowIndex = (lastIdx === -1) ? this.firstDataRowIndex - 1 : (this.firstDataRowIndex + lastIdx);
 
     // Trim the matrix to only include rows with actual data
@@ -161,7 +162,9 @@ class Sheet {
   writeBlock(startRow, matrix) {
     if (!matrix || matrix.length === 0 || !matrix[0] || matrix[0].length === 0) return;
     myLog("info", "Writing " + matrix.length + " rows to " + this.sheetName + " starting at row " + startRow);
-    this.sheet.getRange(startRow, 1, matrix.length, matrix[0].length).setValues(matrix);
+    const range = this.sheet.getRange(startRow, 1, matrix.length, matrix[0].length);
+    range.clearFormat(); // Reset any 'Plain Text' formatting to ensure formulas evaluate
+    range.setValues(matrix);
 
     // Update internal tracker if this exceeds it
     const endRow = startRow + matrix.length - 1;

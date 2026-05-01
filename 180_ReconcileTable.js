@@ -303,8 +303,8 @@ class ReconcileTable extends Table {
     let nextGlobalGroupId = existingGroupIds.length > 0 ? Math.max(...existingGroupIds) + 1 : 1;
     const localToGlobalTxMap = new Map();
 
-    if (!groupsTable._newData) groupsTable._newData = [];
-    if (!logTable._newData) logTable._newData = [];
+    const groupsNewData = [];
+    const logNewData = [];
     
     const mPkOff = mergedTable.getColOffset("PK");
     const mClrOff = mergedTable.getColOffset("Cleared");
@@ -329,7 +329,7 @@ class ReconcileTable extends Table {
       if(gClrOff !== -1) gRow[gClrOff] = tx.Cleared;
       if(gFyOff !== -1) gRow[gFyOff] = tx.FY;
       
-      groupsTable._newData.push(gRow);
+      groupsNewData.push(gRow);
 
       // B. Update Merged Table (Physical Set)
       const cleanPk = String(tx.PK).trim();
@@ -365,21 +365,21 @@ class ReconcileTable extends Table {
           if(logClrOff !== -1) logRow[logClrOff] = true;
           else if(logTable.getColOffset("Cleared") !== -1) logRow[logTable.getColOffset("Cleared")] = true;
           
-          logTable._newData.push(logRow);
+          logNewData.push(logRow);
         }
       }
     });
 
     // 4. Commit all staged data physically
     if (typeof groupsTable.commit === "function") {
-      groupsTable.commit("add");
+      groupsTable.commit(groupsNewData, "add");
     }
     
-    if (logTable._newData.length > 0) {
+    if (logNewData.length > 0) {
       if (typeof logTable.commit === "function") {
-        logTable.commit("add");
+        logTable.commit(logNewData, "add");
       } else {
-        throw new Error(`CRITICAL CONFIG ERROR: NewAccounts_ReconcileLog must be configured as an UpdateTable in the Registry to commit ${logTable._newData.length} logs.`);
+        throw new Error(`CRITICAL CONFIG ERROR: NewAccounts_ReconcileLog must be configured as an UpdateTable in the Registry to commit ${logNewData.length} logs.`);
       }
     } else {
       myLog("warn", "No rows staged for ReconcileLog. ColLabels length: %d", logTable.getColLabels().length);

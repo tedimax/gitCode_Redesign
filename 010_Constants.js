@@ -12,7 +12,9 @@ const CONFIG_CONSTANTS = {
   DEFAULT_TIMEZONE: "Europe/London",
   DECIMAL_PRECISION: 2,
   HASH_PREFIX: "#",
-  CLEAN_NAME_REGEX: /[^\w\s-:#@.,]/gi, // Added hash, at, dot, comma to safe list
+  CLEAN_NAME_REGEX: /[^\w\s-:]/gi, // Added colon to safe list
   RANGE_NAME_REGEX: /[^a-zA-Z0-9_]/g,
-  USE_NATIVE_DATES_FOR_SHEET: true // Toggle between true (Native Date) and false (ISO String)
+  USE_NATIVE_DATES_FOR_SHEET: true, // Toggle between true (Native Date) and false (ISO String)
+  DEFAULT_ANNUAL_SUMMARY_SOURCE_TABLE: "AnnualSummaries_Merged",
+  DEFAULT_ANNUAL_SUMMARY_NAMES_TABLE: "AnnualSummaries_Names"
 };

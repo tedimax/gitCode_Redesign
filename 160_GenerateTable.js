@@ -64,10 +64,12 @@ class GenerateTable extends ImportTable {
     });
 
     // 4. Serialize to matrix
-    this._newData = this._serializeObjectsToMatrix(expandedObjects);
+    const newData = this._serializeObjectsToMatrix(expandedObjects);
 
     myLog("info", "Expansion complete for %s. Generated %d rows from %d templates.", 
-      this.longName, this._newData.length, sourceSheet.windowDataLength);
+      this.longName, newData.length, sourceSheet.windowDataLength);
+    
+    return newData;
   }
 
   /**

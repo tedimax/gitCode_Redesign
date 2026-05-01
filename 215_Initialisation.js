@@ -14,6 +14,18 @@ const Registry = (() => {
         const labels = globals.sheetsObj.getColLabels();
         globals.sheetsObj.getWindow().forEach((row, idx) => {
           const config = globals.sheetsObj.getRowObjectByOffset(idx);
+          
+          // --- NEW: Parse JSON Properties ---
+          if (config.Properties) {
+            try {
+              const extra = JSON.parse(config.Properties);
+              Object.assign(config, extra);
+              myLog("trace", "Merged %d extra properties for %s", Object.keys(extra).length, config.LongName);
+            } catch (e) {
+              myLog("warn", "Failed to parse Properties for %s: %s", config.LongName, e.message);
+            }
+          }
+          
           if (config.LongName) _sheets.set(config.LongName.trim(), config);
         });
       }

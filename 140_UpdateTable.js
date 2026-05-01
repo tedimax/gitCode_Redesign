@@ -8,11 +8,6 @@
 class UpdateTable extends Table {
   constructor(ss, longName, properties = {}) {
     super(ss, longName, properties);
-    this._newData = []; // Container for newly generated or staged data
-  }
-
-  importData() {
-    this.transform();
   }
 
   /**
@@ -23,13 +18,35 @@ class UpdateTable extends Table {
     myLog("info", "Starting runSync for %s...", this.longName);
     
     // 1. Perform Ingestion (Transformation/Fetch)
-    this.importData();
+    const newData = this.importData() || [];
     
     // 2. Persist results
-    const stats = this.commit();
+    const stats = this.commit(newData);
+
+    // 3. Post-Persistence Hooks (e.g. Styling)
+    this.afterSync(stats, newData);
+    
+    // 4. Final Cleanup
+    this.flushMemory();
     
     myLog("info", "runSync complete for %s. Stats: %s", this.longName, JSON.stringify(stats));
     return stats;
+  }
+
+  /**
+   * Post-Sync Hook.
+   * Overridden by subclasses to perform styling or additional logic before RAM is flushed.
+   */
+  afterSync(stats, newData) {
+    // No-op base
+  }
+
+  /**
+   * Ingestion phase.
+   * Overridden by subclasses (e.g., AnnualSheet) or defers to transform().
+   */
+  importData() {
+    return this.transform();
   }
 
   /**
@@ -38,14 +55,21 @@ class UpdateTable extends Table {
    */
   transform() {
     myLog("trace", "Base UpdateTable: No transformation logic defined for %s", this.longName);
+    return [];
   }
 
   /**
    * Main entry point for persistence.
    * @param {string} mode - 'replace', 'update', or 'add'. Defaults to props.ImportMethod.
    */
-  commit(mode = this.getProperty("ImportMethod") || "replace") {
+  commit(newData, mode = this.getProperty("ImportMethod") || "replace") {
     myLog("info", "Committing changes to %s using mode: %s", this.longName, mode);
+
+    // Ensure newData is provided
+    if (!newData) {
+       myLog("warn", "commit() called without newData for %s. Attempting transform...", this.longName);
+       newData = this.transform() || [];
+    }
 
     // 1. Transactional Locking: Prevent concurrent syncs from corrupting data
     const lock = LockService.getScriptLock();
@@ -57,26 +81,21 @@ class UpdateTable extends Table {
     }
 
     try {
-      // 2. Ensure data is transformed and in memory
-      if (this._newData.length === 0) {
-        this.transform();
-      }
-
       // 3. Route to specific persistence logic
       let stats = { added: 0, updated: 0 };
       switch (mode.toLowerCase()) {
         case "replace":
         case "replacerows":
-          stats = this._commitReplace();
+          stats = this._commitReplace(newData);
           break;
         case "add":
         case "addrows":
         case "append":
-          stats = this._commitAdd();
+          stats = this._commitAdd(newData);
           break;
         case "update":
         case "updaterows":
-          stats = this._commitUpdate();
+          stats = this._commitUpdate(newData);
           break;
         default:
           myLog("error", "Unknown import mode: %s. Defaulting to no-op.", mode);
@@ -88,9 +107,6 @@ class UpdateTable extends Table {
       if (hasChanges) {
         // 4. Post-commit: Sort the target sheet
         this.sortData();
-
-        // 5. Auto-flush memory to guarantee no stale cache if used as a source later
-        this.flushMemory();
       }
 
       return stats;
@@ -136,26 +152,22 @@ class UpdateTable extends Table {
   /**
    * REPLACE Mode: Wipes all data and writes the fresh matrix.
    */
-  _commitReplace() {
+  _commitReplace(newData) {
     this.clearDataArea();
 
-    const newRowsSnapshot = [...this._newData];
-    if (newRowsSnapshot.length > 0) {
-      this.writeChunks(this.firstDataRowIndex, newRowsSnapshot);
+    if (newData.length > 0) {
+      this.writeChunks(this.firstDataRowIndex, newData);
     }
-    myLog("info", "Replace complete: %d rows written.", newRowsSnapshot.length);
-    return { added: newRowsSnapshot.length, updated: 0 };
+    myLog("info", "Replace complete: %d rows written.", newData.length);
+    return { added: newData.length, updated: 0 };
   }
 
   /**
    * ADD Mode: Appends only rows with unique keys not already in the sheet.
    */
-  _commitAdd() {
-    // 1. Snapshot the NEW data
-    const newRowsSnapshot = [...this._newData];
-
+  _commitAdd(newData) {
     // 2. Filter out existing rows based on Key
-    const rowsToAdd = newRowsSnapshot.filter(row => {
+    const rowsToAdd = newData.filter(row => {
       const rowKey = this.getRowKey(row);
       if (!rowKey) return true; // Append blindly if table lacks a Primary Key
       return !this.getHashKeyMap().has(rowKey);
@@ -173,9 +185,9 @@ class UpdateTable extends Table {
    * UPDATE Mode: Synchronizes existing rows and appends new ones.
    * Orchestrates the transformation and persistence of dirty records.
    */
-  _commitUpdate() {
+  _commitUpdate(newData) {
     // 1. Snapshot the NEW data
-    const { rowsToUpdate, rowsToAdd } = this._identifyChanges();
+    const { rowsToUpdate, rowsToAdd } = this._identifyChanges(newData);
 
     // 2. Apply updates in contiguous batches
     this._applyUpdates(rowsToUpdate);
@@ -194,8 +206,8 @@ class UpdateTable extends Table {
    * Compares staged data against the sheet to find changed or new records.
    * @returns {Object} {rowsToUpdate: Array<{offset, data}>, rowsToAdd: Array<Array>}
    */
-  _identifyChanges() {
-    const newRowsSnapshot = [...this._newData];
+  _identifyChanges(newData) {
+    const newRowsSnapshot = newData;
     const rowsToUpdate = [];
     const rowsToAdd = [];
     const labels = this.getColLabels();
@@ -274,8 +286,7 @@ class UpdateTable extends Table {
    */
   flushMemory() {
     super.flushMemory();
-    this._newData = [];
-    myLog("trace", "Flushed _newData matrix for %s", this.longName);
+    myLog("trace", "Flushed memory for %s", this.longName);
   }
 
 }

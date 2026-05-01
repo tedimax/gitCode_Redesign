@@ -26,17 +26,9 @@ const Utils = (() => {
     if (!longName) return null;
     if (globals.sheetInstances[longName]) return globals.sheetInstances[longName];
 
-    // Read config from globals.sheetsObj if it exists
-    let config = {};
-    if (globals.sheetsObj) {
-        // Find row in Sheets registry
-        const rowIndex = globals.sheetsObj.getRowOffsetByKey(longName);
-        myLog("trace", "Registry Lookup for " + longName + ": Found at Row Index " + rowIndex);
-        if (typeof rowIndex === 'number' && rowIndex !== -1) {
-            config = globals.sheetsObj.getRowObjectByOffset(rowIndex);
-        }
-    }
-
+    // Read hydrated config from Registry
+    const config = Registry.getSheetConfig(longName);
+    
     // Resolve SSID
     const ssName = config.SpreadSheetName || longName.split("_")[0];
     const ssid = globals.ssMap.get(ssName) || globals.defaultSSID;
