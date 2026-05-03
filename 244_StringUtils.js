@@ -23,16 +23,37 @@ const StringUtils = (() => {
   };
 
   /**
-   * General purpose name cleaner.
-   * Logic: Remove characters that might break CSV/Excel/Formulas.
+   * Cleans and validates a string name (Account or Category).
+   * Returns null if the value is empty or contains "garbage" strings like "undefined".
    */
-  const cleanName = (str) => {
-    if (!str) return "";
-    return String(str).trim().replace(CONFIG_CONSTANTS.CLEAN_NAME_REGEX, "");
+  const sanitizeName = (val) => {
+    const cleaned = String(val || "").trim();
+    if (!cleaned || cleaned.toLowerCase() === "undefined" || cleaned.toLowerCase() === "null") return null;
+    return cleaned;
+  };
+
+  /**
+   * Replaces {{mustache}} tokens in a string using values from a context object.
+   */
+  const interpolate = (template, context) => {
+    if (typeof template !== "string") return template;
+    return template.replace(/{{(.*?)}}/g, (match, key) => {
+      return resolveKey(context, key.trim()) || "";
+    });
+  };
+
+  /**
+   * Resolves a nested property value from an object using a dot-notation path (e.g., "totals.grandIn").
+   */
+  const resolveKey = (obj, path) => {
+    if (!obj || !path) return undefined;
+    return path.split('.').reduce((prev, curr) => prev ? prev[curr] : undefined, obj);
   };
 
   return {
     toRangeName,
-    cleanName
+    sanitizeName,
+    interpolate,
+    resolveKey
   };
 })();

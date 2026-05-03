@@ -80,16 +80,27 @@ function initialize() {
   };
   globals.sheetsObj = new Table(anchorSS, CONFIG_CONSTANTS.SHEETS_CONFIG_NAME, sheetsConfig);
 
-  // Stage 3: SSID Map
+  // Stage 3: SSID Map (Strict matching)
   const ssNameOff = globals.sheetsObj.getColOffset("SpreadSheetName");
   const ssidOff = globals.sheetsObj.getColOffset("SSID");
   
-  if (ssNameOff !== -1 && ssidOff !== -1) {
-    globals.ssMap = new Map(globals.sheetsObj.getWindow()
-      .filter(row => row[ssNameOff] && row[ssidOff])
-      .map(row => [String(row[ssNameOff]).trim(), String(row[ssidOff]).trim()])
-    );
+  if (ssNameOff === -1 || ssidOff === -1) {
+    const labels = globals.sheetsObj.getColLabels();
+    throw new Error(`Registry Initialization Failed: Missing mandatory column(s) in "${CONFIG_CONSTANTS.SHEETS_CONFIG_NAME}". 
+    Expected: "SpreadSheetName" and "SSID". 
+    Found Columns: [${labels.join(", ")}]. 
+    Please ensure your configuration sheet exactly matches the required header names (Case-Sensitive).`);
   }
+
+  globals.ssMap = new Map(globals.sheetsObj.getWindow()
+    .filter(row => row[ssNameOff] && row[ssidOff])
+    .map(row => {
+      const name = String(row[ssNameOff]).trim();
+      const id = String(row[ssidOff]).trim();
+      return [name, id];
+    })
+  );
+  myLog("info", "Built SSID Map with %d entries.", globals.ssMap.size);
 
   // Stage 4: DataType Hydration
   const datatypesConfig = {

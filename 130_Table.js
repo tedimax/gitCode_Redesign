@@ -29,43 +29,61 @@ class Table extends Sheet {
 
   /**
    * Builds a Map of Label -> Column Offset.
-   * Uses functional .reduce() to traverse the label row.
+   * Stores both the ordered array and the lookup map for O(1) retrieval.
    */
   initializeHeaderMap() {
     const labelRow = this.getProperty("LabelRow") || 1;
-    const labels = this.getLabels(labelRow);
     
-    this._columnMap = labels.reduce((map, label, offset) => {
-      if (label) {
-        map.set(label.trim(), offset);
-      }
-      return map;
-    }, new Map());
+    // 1. Capture and trim labels in their physical order
+    this._orderedLabels = this.getLabels(labelRow).map(l => String(l || "").trim());
     
-    this._orderedLabels = null; // Clear cache
+    // 2. Build the lookup map functionally (Label -> Offset)
+    this._columnMap = new Map(
+      this._orderedLabels
+        .map((label, offset) => [label, offset])
+        .filter(([label]) => label !== "")
+    );
+    
     myLog("trace", "Initialized columnMap for %s with %d labels", this.longName, this._columnMap.size);
   }
 
   /**
    * Returns an array of field labels in their physical column order.
-   * Caches the result for performance.
    */
   getColLabels() {
-    if (this._orderedLabels) return this._orderedLabels;
-
-    this._orderedLabels = Array.from(this._columnMap.entries())
-      .sort((a, b) => a[1] - b[1])
-      .map(entry => entry[0]);
-
-    return this._orderedLabels;
+    return this._orderedLabels || [];
   }
 
   /**
-   * Column Index Resolver
+   * O(1) Column Index Resolver
    */
   getColOffset(name) {
-    if (!this._columnMap.has(name)) return -1;
-    return this._columnMap.get(name);
+    const off = this._columnMap.get(name);
+    return off !== undefined ? off : -1;
+  }
+
+  /**
+   * Helper to resolve a symbolic map of fields to their column offsets.
+   */
+  getOffsets(fieldMap) {
+    const offsets = {};
+    for (const [key, colName] of Object.entries(fieldMap)) {
+      offsets[key] = this.getColOffset(colName);
+    }
+    return offsets;
+  }
+
+  /**
+   * Automatically resolves symbolic offsets for this table based on the global TABLE_COLUMN_MAP.
+   * If an override map is provided, it uses that instead.
+   */
+  getSymbolicOffsets(overrideMap = null) {
+    const map = overrideMap || TABLE_COLUMN_MAP[this.longName];
+    if (!map) {
+      myLog("trace", "No standard column map found for %s", this.longName);
+      return {};
+    }
+    return this.getOffsets(map);
   }
 
   /**
@@ -220,6 +238,54 @@ class Table extends Sheet {
     return this._lookupCacheMap.get(cacheKey).get(String(searchVal)) || "";
   }
 
+  /**
+   * Overrides Sheet.fetchWindow to apply Strict Typing and Perimeter Validation.
+   * Every cell is cast to its configured type and checked for mandatory requirements.
+   */
+  fetchWindow() {
+    super.fetchWindow();
+    
+    const labels = this.getColLabels();
+    const fieldTypes = labels.map(label => TypeUtils.getType(this.longName, label));
+    const physicalRowStart = this.firstDataRowIndex;
+    
+    myLog("trace", "Applying Strict Typing & Validation to %d rows in %s", this.windowDataLength, this.longName);
+    
+    const pkOff = this.getColOffset("PK");
+    const clearedOff = this.getColOffset("Cleared");
+
+    this._window = this._window.map((row, rowOff) => {
+      const physicalRow = physicalRowStart + rowOff;
+      const pkValue = pkOff !== -1 ? row[pkOff] : "Unknown";
+      
+      // Resolve "Cleared" status for conditional validation
+      const rawCleared = clearedOff !== -1 ? row[clearedOff] : true;
+      const isCleared = (rawCleared === true || String(rawCleared).toUpperCase() === "TRUE");
+
+      return row.map((cell, colOff) => {
+        const type = fieldTypes[colOff];
+        const label = labels[colOff];
+        const val = TypeUtils.castType(cell, type);
+
+        // --- PERIMETER VALIDATION ---
+        // Mandatory fields are strictly enforced ONLY if the row is "Cleared"
+        let isMandatory = type.startsWith("*") || ["Account", "EntryType", "FinancialYear", "Date", "PK", "Group", "Amount"].includes(label);
+        
+        // If not cleared, we relax the mandatory requirement for Group/Amount/etc.
+        if (!isCleared) isMandatory = false;
+
+        if (isMandatory && (val === "" || val === null || val === undefined)) {
+          throw new Error(`Validation Error: Mandatory field "${label}" is empty at row ${physicalRow} [PK: ${pkValue}] of ${this.longName}.`);
+        }
+        
+        if (isMandatory && label === "Group" && Number(val) === 0) {
+          throw new Error(`Validation Error: Group ID cannot be zero at row ${physicalRow} [PK: ${pkValue}] of ${this.longName}.`);
+        }
+
+        return val;
+      });
+    });
+  }
 
 }
 

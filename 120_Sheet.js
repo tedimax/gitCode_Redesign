@@ -16,8 +16,15 @@ class Sheet {
     this.sheetName = config.SheetName || parts.slice(1).join("_");
     this.sheet = ss.getSheetByName(this.sheetName);
     
-    if (!this.sheet && config.SheetType !== 'FileTable' && config.SheetType !== 'InMemoryTable') {
-      throw new Error(`Sheet "${this.sheetName}" not found in spreadsheet "${ss.getName()}".`);
+    const isVirtual = config.SheetType === 'FileTable' || config.SheetType === 'InMemoryTable';
+    if (!this.sheet && !isVirtual) {
+      if (config.CreateIfMissing) {
+        myLog("info", "Sheet: '%s' not found. Creating new sheet in spreadsheet %s.", this.sheetName, ss.getId());
+        this.sheet = ss.insertSheet(this.sheetName);
+      } else {
+        const ssid = ss.getId();
+        throw new Error(`Registry Failure: Sheet "${this.sheetName}" not found. Expected in Spreadsheet ID: "${ssid}". Please check your Sheets configuration.`);
+      }
     }
 
     // Windows state

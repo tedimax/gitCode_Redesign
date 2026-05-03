@@ -10,6 +10,7 @@ class GenerateTable extends ImportTable {
     super(ss, longName, properties);
   }
 
+
   /**
    * Overrides ImportTable.transform to implement 1:N expansion logic.
    */
@@ -26,12 +27,9 @@ class GenerateTable extends ImportTable {
 
     // Identify required columns in the source sheet for expansion math
     const sourceLabels = sourceSheet.getColLabels();
-    const startOff = sourceSheet.getColOffset("DateStart");
-    const endOff = sourceSheet.getColOffset("DateEnd");
-    const intervalOff = sourceSheet.getColOffset("Interval");
-    const unitOff = sourceSheet.getColOffset("Unit");
+    const scheduleCols = sourceSheet.getSymbolicOffsets(TABLE_COLUMN_MAP.Schedules);
 
-    if (startOff === -1 || endOff === -1 || intervalOff === -1) {
+    if (scheduleCols.dateStart === -1 || scheduleCols.dateEnd === -1 || scheduleCols.interval === -1) {
       myLog("error", "Source sheet %s is missing mandatory scheduling columns (DateStart, DateEnd, Interval).", sourceSheet.longName);
       return;
     }
@@ -44,10 +42,10 @@ class GenerateTable extends ImportTable {
 
     // 1. Loop through each Template Row in the Source
     sourceSheet.getWindow().forEach((sourceRow, rowOff) => {
-      const startDate = sourceRow[startOff];
-      const endDate = sourceRow[endOff];
-      const interval = sourceRow[intervalOff];
-      const unit = (unitOff !== -1) ? sourceRow[unitOff] : 1;
+      const startDate = sourceRow[scheduleCols.dateStart];
+      const endDate = sourceRow[scheduleCols.dateEnd];
+      const interval = sourceRow[scheduleCols.interval];
+      const unit = (scheduleCols.unit !== -1) ? sourceRow[scheduleCols.unit] : 1;
 
       // 2. Generate the series of dates using the Temporal helper
       const occurrenceDates = DateUtils.getScheduledDates(startDate, endDate, interval, unit);

@@ -21,24 +21,26 @@ const Utils = (() => {
   /**
    * Table Singleton Factory
    * Resolves instances based on the NewAccounts_Sheets registry.
+   * @param {string} longName
+   * @param {string} ssidOverride - Optional SSID to force a specific spreadsheet.
    */
-  const getSheetInstance = (longName) => {
+  const getSheetInstance = (longName, ssidOverride = null) => {
     if (!longName) return null;
     if (globals.sheetInstances[longName]) return globals.sheetInstances[longName];
 
     // Read hydrated config from Registry
     const config = Registry.getSheetConfig(longName);
     
-    // Resolve SSID
+    // Resolve SSID (Priority: Override > Config > Default)
     const ssName = config.SpreadSheetName || longName.split("_")[0];
-    const ssid = globals.ssMap.get(ssName) || globals.defaultSSID;
+    const ssid = ssidOverride || globals.ssMap.get(ssName) || globals.defaultSSID;
     const ss = getSpreadsheetInstance(ssid);
 
     // Instantiate correct Type
     const type = config.SheetType || "Table";
     const Constructor = globals.tableMap[type] || globals.tableMap['Table'];
     
-    myLog("trace", "Instantiating %s as %s (Registry: %s)", longName, Constructor.name, type);
+    myLog("trace", "Instantiating %s as %s (SSID: %s)", longName, Constructor.name, ssid);
 
     const instance = new Constructor(ss, longName, config);
     globals.sheetInstances[longName] = instance;

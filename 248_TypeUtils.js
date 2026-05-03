@@ -18,7 +18,9 @@ const TypeUtils = {
     switch (cleanType) {
       case 'String':
         if (val instanceof Date) return DateUtils.toISODate(val);
-        return String(val).trim().replace(CONFIG_CONSTANTS.CLEAN_NAME_REGEX, '');
+        if (typeof val === 'number') return String(val); // Safety: Never regex-clean numbers
+        // Trim and remove only non-printable control characters (ASCII 0-31)
+        return String(val).trim().replace(/[\x00-\x1F\x7F-\x9F]/g, "");
         
       case 'Integer':
         const intVal = parseInt(val, 10);
@@ -26,13 +28,13 @@ const TypeUtils = {
         
       case 'Currency':
       case 'Percentage':
-        const numVal = parseFloat(val);
-        return isNaN(numVal) ? (0).toFixed(CONFIG_CONSTANTS.DECIMAL_PRECISION) : numVal.toFixed(CONFIG_CONSTANTS.DECIMAL_PRECISION);
+        // Strip symbols and commas, then return as a pure Number
+        const cleanVal = String(val).replace(/[£$,\s]/g, '');
+        const numVal = parseFloat(cleanVal);
+        return isNaN(numVal) ? 0 : numVal;
         
       case 'Boolean':
-        if (typeof val === 'boolean') return val;
-        const strVal = String(val).toLowerCase();
-        return strVal === 'true' || strVal === 'yes' || strVal === '1';
+        return this.isTrue(val);
         
       case 'Date':
         return DateUtils.toISODate(val);
@@ -60,7 +62,7 @@ const TypeUtils = {
         
       default:
         // Untyped fields default to clean String
-        return String(val).trim().replace(CONFIG_CONSTANTS.CLEAN_NAME_REGEX, '');
+        return String(val).trim();
     }
   },
   
@@ -110,5 +112,14 @@ const TypeUtils = {
   getType(longName, columnName) {
     if (!globals.dataTypesMap) return "String";
     return globals.dataTypesMap.get(`${longName}:${columnName}`) || "String";
+  },
+
+  /**
+   * Helper to normalize Google Sheets boolean-ish values.
+   * Strictly returns true ONLY for literal booleans or the string "TRUE".
+   */
+  isTrue(val) {
+    if (typeof val === 'boolean') return val;
+    return String(val || "").toUpperCase() === "TRUE";
   }
 };

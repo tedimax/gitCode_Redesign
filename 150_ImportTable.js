@@ -12,6 +12,7 @@ class ImportTable extends UpdateTable {
     this._rawFormulaMap = new Map();      // TargetField -> Original String (for dep analysis)
   }
 
+
   /**
    * Overrides UpdateTable.importData
    * Explicitly triggers the transformation engine.
@@ -36,12 +37,11 @@ class ImportTable extends UpdateTable {
       myLog("info", "No explicit formulas found for %s in Registry. Defaulting to 1:1 mapping.", this.longName);
     }
 
-    const targetFieldOff = globals.formulasObj.getColOffset("TargetField");
-    const formulaOff = globals.formulasObj.getColOffset("Formula");
+    const formulaCols = globals.formulasObj.getSymbolicOffsets();
 
     relevantFormulas.forEach(row => {
-      const fullRef = String(row[targetFieldOff]).trim();
-      let formula = String(row[formulaOff] || "").trim();
+      const fullRef = String(row[formulaCols.targetField]).trim();
+      let formula = String(row[formulaCols.formula] || "").trim();
       
       const match = fullRef.match(/\[(.*?)\]/);
       if (!match) return;

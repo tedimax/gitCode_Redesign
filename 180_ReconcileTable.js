@@ -10,6 +10,7 @@ class ReconcileTable extends Table {
     super(ss, longName, properties);
   }
 
+
   // --- Union Find Helpers ---
   root(index, parentMap) {
     if (parentMap[index] === undefined) return index;
@@ -43,13 +44,13 @@ class ReconcileTable extends Table {
 
     // Fetch existing Reconcile table to preserve manual Transaction IDs
     this.fetchWindow();
+    const reconcileCols = this.getSymbolicOffsets();
     const existingTxMap = new Map();
-    const pkOff = this.getColOffset("PK");
-    const txOff = this.getColOffset("Transaction");
-    if (pkOff !== -1 && txOff !== -1) {
+
+    if (reconcileCols.pk !== -1 && reconcileCols.transaction !== -1) {
       this.getWindow().forEach(row => {
-        const pk = String(row[pkOff]).trim();
-        const tx = String(row[txOff]).trim();
+        const pk = StringUtils.sanitizeName(row[reconcileCols.pk]);
+        const tx = StringUtils.sanitizeName(row[reconcileCols.transaction]);
         if (pk && tx) existingTxMap.set(pk, tx);
       });
     }
@@ -92,36 +93,31 @@ class ReconcileTable extends Table {
   }
 
   _extractUnreconciledRows(mergedTable, existingTxMap) {
-    const clearedCol = mergedTable.getColOffset("Cleared");
-    const pkCol = mergedTable.getColOffset("PK");
-    const fkCol = mergedTable.getColOffset("FK");
-    const depCol = mergedTable.getColOffset("DepositID");
-    const payCol = mergedTable.getColOffset("PaymentID");
-    const entryTypeCol = mergedTable.getColOffset("EntryType");
-    const accountCol = mergedTable.getColOffset("Account");
+    const mergedCols = mergedTable.getSymbolicOffsets();
     
     return mergedTable.getWindow()
       .map((row, offset) => ({ row, offset }))
-      .filter(({ row }) => !row[clearedCol] && row[pkCol])
+      .filter(({ row }) => !TypeUtils.isTrue(row[mergedCols.cleared]) && row[mergedCols.pk])
       .map(({ row, offset }) => {
-        const pkStr = String(row[pkCol]).trim();
+        const pkStr = StringUtils.sanitizeName(row[mergedCols.pk]);
         return {
           rowOffset: offset,
           PK: pkStr,
           existingTx: existingTxMap.get(pkStr) || "",
-          identifiers: [row[pkCol], row[fkCol], row[depCol], row[payCol]]
-                        .filter(val => val !== undefined && val !== null && String(val).trim() !== ""),
-          entryType: entryTypeCol !== -1 ? String(row[entryTypeCol] || "").trim() : "",
-          account: accountCol !== -1 ? String(row[accountCol] || "").trim() : "",
-          prefix: pkStr.split('#')[0]
+          identifiers: [row[mergedCols.pk], row[mergedCols.fk], row[mergedCols.depositId], row[mergedCols.paymentId]]
+                        .map(id => StringUtils.sanitizeName(id))
+                        .filter(id => id !== null),
+          entryType: (StringUtils.sanitizeName(row[mergedCols.entryType]) || "").toUpperCase(),
+          account: StringUtils.sanitizeName(row[mergedCols.account]) || "",
+          prefix: pkStr ? pkStr.split('#')[0] : ""
         };
       });
   }
 
   _sortUnreconciledRows(unreconciledRows) {
     return unreconciledRows.sort((rowA, rowB) => {
-      const isRowAAccount = rowA.entryType.toLowerCase() === "account";
-      const isRowBAccount = rowB.entryType.toLowerCase() === "account";
+      const isRowAAccount = rowA.entryType === "ACCOUNT";
+      const isRowBAccount = rowB.entryType === "ACCOUNT";
       
       // Accounts always come before Activities
       if (isRowAAccount && !isRowBAccount) return -1;
@@ -149,9 +145,11 @@ class ReconcileTable extends Table {
 
     unreconciledRows.forEach((item, index) => {
       item.identifiers.forEach(id => {
-        const cleanId = String(id).trim();
-        if (!idToRowMap.has(cleanId)) idToRowMap.set(cleanId, new Set());
-        idToRowMap.get(cleanId).add(index);
+        const cleanId = StringUtils.sanitizeName(id);
+        if (cleanId) {
+          if (!idToRowMap.has(cleanId)) idToRowMap.set(cleanId, new Set());
+          idToRowMap.get(cleanId).add(index);
+        }
       });
 
       if (item.existingTx) {
@@ -200,11 +198,10 @@ class ReconcileTable extends Table {
       }
       
       const outRow = new Array(this.getColLabels().length).fill("");
-      const pkOutOff = this.getColOffset("PK");
-      const txOutOff = this.getColOffset("Transaction");
+      const reconcileCols = this.getSymbolicOffsets();
       
-      if (pkOutOff !== -1) outRow[pkOutOff] = item.PK;
-      if (txOutOff !== -1) outRow[txOutOff] = currentTxId;
+      if (reconcileCols.pk !== -1) outRow[reconcileCols.pk] = item.PK;
+      if (reconcileCols.transaction !== -1) outRow[reconcileCols.transaction] = currentTxId;
       
       outputData.push(outRow);
     });
@@ -258,22 +255,19 @@ class ReconcileTable extends Table {
     myLog("info", "Processing balanced rows in %s", this.longName);
     this.fetchWindow();
     
-    const pkOff = this.getColOffset("PK");
-    const txOff = this.getColOffset("Transaction");
-    const balOff = this.getColOffset("Balanced");
-    const fyOff = this.getColOffset("TransactionFY");
+    const reconcileCols = this.getSymbolicOffsets();
     
     const rowsToDelete = [];
     const balancedTxs = []; 
     
     // 1. Identify Balanced Rows
     this.getWindow().forEach((row, offset) => {
-      if (String(row[balOff]).toUpperCase() === "TRUE") {
+      if (TypeUtils.isTrue(row[reconcileCols.balanced])) {
         balancedTxs.push({
-          PK: String(row[pkOff]),
-          Group: row[txOff],
+          PK: String(row[reconcileCols.pk]),
+          Group: row[reconcileCols.transaction],
           Cleared: true,
-          FY: row[fyOff]
+          FY: row[reconcileCols.transactionFY]
         });
         rowsToDelete.push(offset + this.firstDataRowIndex); 
       }
@@ -295,9 +289,9 @@ class ReconcileTable extends Table {
     logTable.fetchWindow(); // May be empty, but safely initialized
 
     // 3. Remap Local Transactions to Global Groups
+    const groupCols = groupsTable.getSymbolicOffsets();
     const existingGroupIds = groupsTable.getWindow().map(row => {
-       const gOff = groupsTable.getColOffset("Group");
-       return gOff !== -1 ? Number(row[gOff]) : 0;
+       return groupCols.group !== -1 ? Number(row[groupCols.group]) : 0;
     }).filter(n => !isNaN(n));
     
     let nextGlobalGroupId = existingGroupIds.length > 0 ? Math.max(...existingGroupIds) + 1 : 1;
@@ -306,9 +300,7 @@ class ReconcileTable extends Table {
     const groupsNewData = [];
     const logNewData = [];
     
-    const mPkOff = mergedTable.getColOffset("PK");
-    const mClrOff = mergedTable.getColOffset("Cleared");
-    const mGrpOff = mergedTable.getColOffset("Group");
+    const mergedCols = mergedTable.getSymbolicOffsets();
 
     balancedTxs.forEach(tx => {
       // Map global group ID
@@ -319,26 +311,22 @@ class ReconcileTable extends Table {
 
       // A. Stage data for NewGroups
       const gRow = new Array(groupsTable.getColLabels().length).fill("");
-      const gPkOff = groupsTable.getColOffset("PK");
-      const gGrpOff = groupsTable.getColOffset("Group");
-      const gClrOff = groupsTable.getColOffset("Cleared");
-      const gFyOff = groupsTable.getColOffset("FY");
       
-      if(gPkOff !== -1) gRow[gPkOff] = tx.PK;
-      if(gGrpOff !== -1) gRow[gGrpOff] = tx.GlobalGroupID;
-      if(gClrOff !== -1) gRow[gClrOff] = tx.Cleared;
-      if(gFyOff !== -1) gRow[gFyOff] = tx.FY;
+      if(groupCols.pk !== -1) gRow[groupCols.pk] = tx.PK;
+      if(groupCols.group !== -1) gRow[groupCols.group] = tx.GlobalGroupID;
+      if(groupCols.cleared !== -1) gRow[groupCols.cleared] = tx.Cleared;
+      if(groupCols.fy !== -1) gRow[groupCols.fy] = tx.FY;
       
       groupsNewData.push(gRow);
 
       // B. Update Merged Table (Physical Set)
-      const cleanPk = String(tx.PK).trim();
+      const cleanPk = StringUtils.sanitizeName(tx.PK);
       const mRowOff = mergedTable.getRowOffsetByKey(cleanPk);
 
       if (mRowOff !== undefined) {
          const pRow = mRowOff + mergedTable.firstDataRowIndex;
-         if (mClrOff !== -1) mergedTable.sheet.getRange(pRow, mClrOff + 1).setValue(true);
-         if (mGrpOff !== -1) mergedTable.sheet.getRange(pRow, mGrpOff + 1).setValue(tx.GlobalGroupID);
+         if (mergedCols.cleared !== -1) mergedTable.sheet.getRange(pRow, mergedCols.cleared + 1).setValue(true);
+         if (mergedCols.group !== -1) mergedTable.sheet.getRange(pRow, mergedCols.group + 1).setValue(tx.GlobalGroupID);
       }
 
       // C. Stage data for ReconcileLog
@@ -347,23 +335,13 @@ class ReconcileTable extends Table {
         const prefix = prefixMatch[1];
         const ledgerName = this._getLedgerNameFromPrefix(prefix);
         if (ledgerName) {
+          const logCols = logTable.getSymbolicOffsets();
           const logRow = new Array(logTable.getColLabels().length).fill("");
-          const logSheetOff = logTable.getColOffset("SheetName");
-          const logTxOff = logTable.getColOffset("TransactionId");
-          const logGrpOff = logTable.getColOffset("GroupId");
-          const logClrOff = logTable.getColOffset("ClearStatus");
           
-          if(logSheetOff !== -1) logRow[logSheetOff] = ledgerName;
-          else if(logTable.getColOffset("Sheet") !== -1) logRow[logTable.getColOffset("Sheet")] = ledgerName;
-          
-          if(logTxOff !== -1) logRow[logTxOff] = tx.PK;
-          else if(logTable.getColOffset("TransactionID") !== -1) logRow[logTable.getColOffset("TransactionID")] = tx.PK;
-          
-          if(logGrpOff !== -1) logRow[logGrpOff] = tx.GlobalGroupID;
-          else if(logTable.getColOffset("GroupID") !== -1) logRow[logTable.getColOffset("GroupID")] = tx.GlobalGroupID;
-          
-          if(logClrOff !== -1) logRow[logClrOff] = true;
-          else if(logTable.getColOffset("Cleared") !== -1) logRow[logTable.getColOffset("Cleared")] = true;
+          if(logCols.sheetName !== -1) logRow[logCols.sheetName] = ledgerName;
+          if(logCols.transactionId !== -1) logRow[logCols.transactionId] = tx.PK;
+          if(logCols.groupId !== -1) logRow[logCols.groupId] = tx.GlobalGroupID;
+          if(logCols.clearStatus !== -1) logRow[logCols.clearStatus] = true;
           
           logNewData.push(logRow);
         }
@@ -414,12 +392,11 @@ class ReconcileTable extends Table {
     
     const mergeSheets = String(mergeSheetsRaw).split(",").map(s => s.trim());
     
-    const longNameOff = globals.sheetsObj.getColOffset("LongName");
-    const prefixOff = globals.sheetsObj.getColOffset("KeyPrefix");
+    const sheetCols = globals.sheetsObj.getSymbolicOffsets();
     
     globals.sheetsObj.getWindow().forEach(row => {
-       const name = row[longNameOff];
-       const prefs = String(row[prefixOff] || "").split(",").map(p => p.trim());
+       const name = row[sheetCols.longName];
+       const prefs = String(row[sheetCols.keyPrefix] || "").split(",").map(p => p.trim());
        if (prefs.includes(prefix) && mergeSheets.includes(name)) {
          targetLongName = name;
        }

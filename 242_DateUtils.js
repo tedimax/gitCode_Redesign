@@ -178,6 +178,20 @@ const DateUtils = {
   },
 
   /**
+   * Calculates the starting year of the Financial Year for a given date.
+   * Logic: April 1st start. (e.g. 2024-01-01 -> "2023", 2024-04-01 -> "2024")
+   */
+  getFYStartYear(val) {
+    if (!val) return null;
+    try {
+      const d = this._toTemporalPlainDate(val);
+      return String(d.month >= 4 ? d.year : d.year - 1);
+    } catch (e) {
+      return null;
+    }
+  },
+
+  /**
    * Thunking Layer: Final conversion for writing back to Google Sheets.
    * Toggles between native JS Date (for formatting) and ISO String (for speed).
    * Controlled by CONFIG_CONSTANTS.USE_NATIVE_DATES_FOR_SHEET.
@@ -191,5 +205,20 @@ const DateUtils = {
     }
     // Return a plain ISO string (Fast, but sheets see it as Text)
     return isoStr;
+  },
+
+  /**
+   * Extracts a 4-digit year string from various formats (Date, String, Number).
+   * Returns null if the input is not a valid year.
+   */
+  parseYear(val) {
+    if (val instanceof Date) return String(val.getFullYear());
+    if (val instanceof Temporal.PlainDate) return String(val.year);
+    
+    const yearStr = StringUtils.sanitizeName(val);
+    if (!yearStr) return null;
+
+    const year = yearStr.split(".")[0].replace(/,/g, "");
+    return (year.length === 4) ? year : null;
   }
 };
