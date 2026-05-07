@@ -28,7 +28,7 @@ const Utils = (() => {
     if (!longName) return null;
     if (globals.sheetInstances[longName]) return globals.sheetInstances[longName];
 
-    // Read hydrated config from Registry
+    // Read hydrated config from Registry (needed to determine Type/SSID)
     const config = Registry.getSheetConfig(longName);
     
     // Resolve SSID (Priority: Override > Config > Default)
@@ -42,7 +42,8 @@ const Utils = (() => {
     
     myLog("trace", "Instantiating %s as %s (SSID: %s)", longName, Constructor.name, ssid);
 
-    const instance = new Constructor(ss, longName, config);
+    // The Constructor now handles its own Registry lookup internally.
+    const instance = new Constructor(ss, longName);
     globals.sheetInstances[longName] = instance;
     
     return instance;

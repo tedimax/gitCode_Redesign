@@ -167,13 +167,10 @@ const DateUtils = {
   toFY(val) {
     if (!val) return "";
     const d = this._toTemporalPlainDate(val);
-    const year = d.year;
-    const month = d.month;
-    
-    if (month >= 4) {
-      return `${String(year).slice(-2)}-${String(year + 1).slice(-2)}`;
+    if (d.month >= 4) {
+      return `${String(d.year).slice(-2)}-${String(d.year + 1).slice(-2)}`;
     } else {
-      return `${String(year - 1).slice(-2)}-${String(year).slice(-2)}`;
+      return `${String(d.year - 1).slice(-2)}-${String(d.year).slice(-2)}`;
     }
   },
 

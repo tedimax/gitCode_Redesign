@@ -14,10 +14,16 @@ class AnnualLedger {
     this.sourceCols = sourceTable ? sourceTable.getSymbolicOffsets() : {};
     this.nameCols = namesTable ? namesTable.getSymbolicOffsets() : {};
 
-    // Internal cache buckets
+    // Internal persistent state (The "Fact Store")
+    this._cachedFacts = { 
+      yearlyData: new Map(), 
+      globalAccountMeta: new Map() 
+    };
+    this._isFullyLoaded = false;
+
+    // Logic caches
     this._categoryToType = null;
     this._assetPrefixes = null;
-    this._cachedFacts = null;
   }
 
   static get INGEST_CONFIG() {
@@ -32,7 +38,8 @@ class AnnualLedger {
    */
   refresh() {
     myLog("info", "AnnualLedger: Refreshing data and metadata.");
-    this._cachedFacts = null;
+    this._cachedFacts = { yearlyData: new Map(), globalAccountMeta: new Map() };
+    this._isFullyLoaded = false;
     this._categoryToType = null;
     this._assetPrefixes = null;
     if (this.sourceTable) this.sourceTable.flushMemory();
@@ -40,96 +47,175 @@ class AnnualLedger {
   }
 
   /**
-   * Public Entry Point: Returns the multi-year fact snapshot.
+   * Public Entry Point: Returns the current fact snapshot.
    */
   getFacts() {
-    if (this._cachedFacts) return this._cachedFacts;
-    if (!this.sourceTable) return null;
+    return this._cachedFacts;
+  }
 
-    myLog("trace", "AnnualLedger: Performing longitudinal fact scan.");
-    const data = this.sourceTable.getWindow();
+  /**
+   * Strategy: Full Scan
+   * Pulls the entire table and ingests every row top-down.
+   */
+  loadFull() {
+    if (this._isFullyLoaded) return;
+    if (!this.sourceTable) return;
+
+    myLog("info", "AnnualLedger: Triggering Full Longitudinal Scan of %s", this.sourceTable.longName);
+    this._ensureColumns();
     
-    // Diagnostic: Log mapping for audit trail
-    const labels = this.sourceTable.getColLabels();
-    const mappingAudit = {};
-    Object.entries(this.sourceCols).forEach(([key, off]) => {
-      mappingAudit[key] = off >= 0 ? `${off} (Label: "${labels[off] || 'MISSING'}")` : "MISSING";
-    });
-    myLog("info", "AnnualLedger Mapping Audit: %s", JSON.stringify(mappingAudit));
+    // 1. Force the table to load from the very beginning to ensure the window is complete
+    this.sourceTable.fetch(this.sourceTable.firstDataRowIndex);
 
-    // FAIL FAST: Ensure mandatory columns exist
-    const mandatory = ["amount", "account", "fy", "pk", "category", "entryType"];
-    mandatory.forEach(key => {
-      if (this.sourceCols[key] === undefined || this.sourceCols[key] === -1) {
-        throw new Error(`Data Integrity Failure: Required column "${key}" (mapped to "${this.sourceTable.getProperty(key)}") was not found in sheet "${this.sourceTable.sheetName}".`);
-      }
-    });
+    // 2. Use the dynamic window start for accurate physical row mapping
+    const data = this.sourceTable.getWindow();
+    const winStart = this.sourceTable._windowStartRow;
 
-    /**
-     * Robust Numeric Parsing with Precision Guard.
-     * Rounds to 2 decimal places to handle Google Sheets floating point garbage (e.g. 7.20999... -> 7.21)
-     */
-    const parseNum = (v) => {
-      if (v === null || v === undefined || v === "") return 0;
-      let n;
-      if (typeof v === "number") {
-        n = v;
-      } else {
-        const clean = String(v).replace(/[£$,\s]/g, '');
-        n = parseFloat(clean);
-      }
-      
-      return isNaN(n) ? 0 : Math.round(n * 100) / 100;
-    };
-
-    this._cachedFacts = { yearlyData: new Map(), globalAccountMeta: new Map() };
-
-    // Pass: Hydrate and Ingest
     data.forEach((row, rowOff) => {
-      const rowNum = rowOff + this.sourceTable.firstDataRowIndex;
-      
-      let rowFY = String(row[this.sourceCols.fy] || "").trim();
-      if (rowFY.length > 4) rowFY = rowFY.substring(0, 4);
-
-      const rawV = row[this.sourceCols.amount];
-      const amount = parseNum(rawV);
-      const pk = row[this.sourceCols.pk] || "Unknown";
-      const accName = row[this.sourceCols.account];
-
-      // FAIL FAST: Strict safety limit (£1M)
-      if (Math.abs(amount) > 1000000) {
-        const rowDump = row.map((v, i) => `[${i}]: ${v}`).join(" | ");
-        myLog("error", "Data Integrity Failure at Row %d [PK: %s]. Value £%s exceeds £1M. Raw Row: %s", rowNum, pk, amount, rowDump);
-        throw new Error(`Data Integrity Failure: Value (£${amount}) exceeds £1M limit at Row ${rowNum} [PK: ${pk}].`);
-      }
-
-      if (!row[this.sourceCols.cleared]) return;
-
-      const state = this._getYearState(rowFY);
-      const yearlyAccountState = this._getYearlyAccountState(state, row[this.sourceCols.account]);
-
-      if ((row[this.sourceCols.entryType] || "").toUpperCase() === "ACCOUNT") {
-        const accountMeta = this._cachedFacts.globalAccountMeta.get(accName);
-        if (accountMeta && !accountMeta.pk) accountMeta.pk = row[this.sourceCols.pk];
-
-        if (row[this.sourceCols.lastBalance] === true || row[this.sourceCols.lastBalance] === "true") {
-          const rawBal = row[this.sourceCols.balance];
-          yearlyAccountState.balCurrent = parseNum(rawBal);
-          myLog("trace", "Balance Audit: Setting closing balance for '%s' in %s to £%s (Row %d).", accName, rowFY, yearlyAccountState.balCurrent, rowNum);
-        }
-        
-      } else if ((row[this.sourceCols.entryType] || "").toUpperCase() === "ACTIVITY") {
-        yearlyAccountState.ledgerNet = (Number(yearlyAccountState.ledgerNet) || 0) + amount;
-        this._ingestTransaction(state, row[this.sourceCols.category], amount);
-      }
+      this._ingestRow(row, rowOff + winStart);
     });
 
-    // Final Pass: Finalize Account Identities (Interpret the PKs)
+    this._finalize();
+    this._isFullyLoaded = true;
+  }
+
+  /**
+   * Strategy: Targeted Backward Scan (Optimized)
+   * Pulls rows from the bottom in chunks until targetYear facts and FY-1 balances are resolved.
+   */
+  loadYear(targetYear) {
+    if (this._isFullyLoaded) return;
+    if (!this.sourceTable) return;
+    
+    const targetFY = String(targetYear);
+    const prevFY = String(Number(targetYear) - 1);
+    
+    myLog("info", "AnnualLedger: Triggering Targeted Backward Scan for FY%s", targetFY);
+    this._ensureColumns();
+
+    const targetAccounts = new Set();
+    const resolvedBalances = new Set();
+    const seenActivityInPrev = new Set();
+    
+    let currentChunkSize = 1000;
+    let stopScan = false;
+    let absoluteLimitReached = false;
+
+    const labelRow = this.sourceTable.getProperty("LabelRow") || 1;
+    const absoluteStart = labelRow + 1;
+    let lastRow = this.sourceTable.getLastRowIndex();
+    
+    myLog("info", "AnnualLedger: Initializing scan for %s (Physical Rows: %d, Data starts at: %d)", this.sourceTable.longName, lastRow, absoluteStart);
+    myLog("info", "AnnualLedger: Labels -> %s", this.sourceTable.getLabels().join(", "));
+    myLog("info", "AnnualLedger: Column Offsets -> FY: Col %s, Account: Col %s, Amount: Col %s, Cleared: Col %s", 
+      StringUtils.columnToLetter(this.sourceCols.fy), 
+      StringUtils.columnToLetter(this.sourceCols.account), 
+      StringUtils.columnToLetter(this.sourceCols.amount), 
+      StringUtils.columnToLetter(this.sourceCols.cleared));
+
+    let isFinished = false;
+    let chunkStart = Math.max(absoluteStart, lastRow - 1000 + 1);
+
+    while (!isFinished && lastRow >= absoluteStart) {
+      myLog("info", "AnnualLedger: Scanning backward chunk from row %d to %d...", chunkStart, lastRow);
+      
+      // Request the physical window expansion (Explicit backward move)
+      this.sourceTable.fetch(chunkStart, (lastRow - chunkStart + 1));
+      const data = this.sourceTable.getWindow();
+      
+      const windowStart = this.sourceTable._windowStartRow;
+      const startIdx = chunkStart - windowStart;
+      const endIdx = lastRow - windowStart;
+
+      for (let i = endIdx; i >= startIdx; i--) {
+        const row = data[i];
+        const pRow = windowStart + i;
+        const rowFY = String(row[this.sourceCols.fy] || "").trim();
+        if (!rowFY) continue;
+
+        if (i === endIdx) {
+          myLog("info", "AnnualLedger: Scan head at row %d (Year: %s)", pRow, rowFY);
+        }
+
+        // 1. Hard Boundary: We scan the target year, the previous year, 
+        // and one additional year as a safety buffer for out-of-period reconciliations.
+        const safetyBoundary = Number(prevFY) - 1;
+        if (Number(rowFY) < safetyBoundary) {
+          myLog("info", "AnnualLedger: Reached safety boundary (%s). Scan complete.", rowFY);
+          isFinished = true;
+          break;
+        }
+
+        // 2. Process Row
+        this._ingestRow(row, pRow);
+
+        // 4. Track resolution state (Continue scanning to catch out-of-order rows)
+        const accName = row[this.sourceCols.account];
+        const type = (row[this.sourceCols.entryType] || "").toUpperCase();
+
+        if (rowFY === targetFY) {
+          targetAccounts.add(accName);
+        } else if (rowFY === prevFY) {
+          if (type === "ACCOUNT" && (row[this.sourceCols.lastBalance] === true || row[this.sourceCols.lastBalance] === "true")) {
+            resolvedBalances.add(accName);
+          }
+        }
+      }
+
+      if (!isFinished) {
+        if (chunkStart <= absoluteStart) {
+          isFinished = true;
+        } else {
+          // Shift the next chunk backward
+          lastRow = chunkStart - 1;
+          chunkStart = Math.max(absoluteStart, lastRow - 1000 + 1);
+        }
+      }
+    }
+
+    this._finalize();
+  }
+
+  /**
+   * Internal Core: Ingests a single row into the state.
+   */
+  _ingestRow(row, rowNum) {
+    const isCleared = (row[this.sourceCols.cleared] === true || String(row[this.sourceCols.cleared]).toUpperCase() === "TRUE");
+    const rowFY = String(row[this.sourceCols.fy] || "");
+    
+    if (!isCleared) return;
+
+    const amount = Number(row[this.sourceCols.amount] || 0);
+    const accName = row[this.sourceCols.account];
+    const type = (row[this.sourceCols.entryType] || "").toUpperCase();
+    const state = this._getYearState(rowFY);
+    const yearlyAccountState = this._getYearlyAccountState(state, accName);
+
+    if (type === "ACCOUNT") {
+      const accountMeta = this._cachedFacts.globalAccountMeta.get(accName);
+      if (accountMeta && !accountMeta.pk) accountMeta.pk = row[this.sourceCols.pk];
+
+      if (row[this.sourceCols.lastBalance] === true || row[this.sourceCols.lastBalance] === "true") {
+        yearlyAccountState.balCurrent = Number(row[this.sourceCols.balance] || 0);
+      }
+    } else if (type === "ACTIVITY") {
+      yearlyAccountState.ledgerNet = (Number(yearlyAccountState.ledgerNet) || 0) + amount;
+      this._ingestTransaction(state, row[this.sourceCols.category], amount);
+    }
+  }
+
+  _ensureColumns() {
+    CONFIG_CONSTANTS.LEDGER_MANDATORY_SYMBOLS.forEach(key => {
+      if (this.sourceCols[key] === undefined || this.sourceCols[key] === -1) {
+        throw new Error(`Data Integrity Failure: Required column "${key}" was not found in ${this.sourceTable.longName}.`);
+      }
+    });
+  }
+
+  _finalize() {
     this._cachedFacts.globalAccountMeta.forEach(accountMeta => {
       accountMeta.isValidAsset = this._isAssetAccount(accountMeta.pk, accountMeta.name);
     });
-
-    return this._cachedFacts;
   }
 
   // =========================================================================
@@ -226,17 +312,16 @@ class AnnualLedger {
    * Determines the logical group for a category.
    */
   _resolveCategoryGroup(category) {
-    const config = AnnualLedger.INGEST_CONFIG;
     const categoryUpper = String(category || "").toUpperCase();
     
     // Rule 1: Special Keyword "TRANSFER" overrides everything
-    if (categoryUpper.includes(config.TRANSFER_KEYWORD)) return "Transfers";
+    if (categoryUpper.includes(AnnualLedger.INGEST_CONFIG.TRANSFER_KEYWORD)) return "Transfers";
     
     // Rule 2: Lookup the official group from the Names registry
     const mappedGroup = this._getCategoryMap().get(category);
     
     // Rule 3: Hidden system groups (like Identifiers) are treated as internal transfers
-    if (mappedGroup && config.HIDDEN_TYPES.includes(mappedGroup.toUpperCase())) return "Transfers";
+    if (mappedGroup && AnnualLedger.INGEST_CONFIG.HIDDEN_TYPES.includes(mappedGroup.toUpperCase())) return "Transfers";
     
     return mappedGroup;
   }

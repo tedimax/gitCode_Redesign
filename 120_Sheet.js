@@ -6,19 +6,20 @@
  * Manages the connection to Google Sheets and the windowed data matrix.
  */
 class Sheet {
-  constructor(ss, longName, config = {}) {
+  constructor(ss, longName, config = null) {
     // Semi-private fields for data isolation
     this._window = [];
-    this._config = config; // Contains sheetName, FirstRow, etc.
+    const hasConfig = config && Object.keys(config).length > 0;
+    this._config = hasConfig ? config : (typeof Registry !== 'undefined' ? Registry.getSheetConfig(longName) : {});
     this.ss = ss;
     this.longName = longName;
     const parts = longName.split("_");
-    this.sheetName = config.SheetName || parts.slice(1).join("_");
+    this.sheetName = this._config.SheetName || parts.slice(1).join("_");
     this.sheet = ss.getSheetByName(this.sheetName);
     
-    const isVirtual = config.SheetType === 'FileTable' || config.SheetType === 'InMemoryTable';
+    const isVirtual = this._config.SheetType === 'FileTable' || this._config.SheetType === 'InMemoryTable';
     if (!this.sheet && !isVirtual) {
-      if (config.CreateIfMissing) {
+      if (this._config.CreateIfMissing) {
         myLog("info", "Sheet: '%s' not found. Creating new sheet in spreadsheet %s.", this.sheetName, ss.getId());
         this.sheet = ss.insertSheet(this.sheetName);
       } else {
@@ -28,10 +29,11 @@ class Sheet {
     }
 
     // Windows state
-    this.firstDataRowIndex = Number(config.FirstRow) || 2;
+    this.firstDataRowIndex = Number(this._config.FirstRow) || 2;
     this.windowDataLength = 0;
     this.currentRowOffset = 0;
     this._isFetched = false;
+    this._windowStartRow = null; // Physical row index of the first row in _window
     this._cachedLastRowIndex = null;
     this._maxWrittenRow = 0;
   }
@@ -41,9 +43,7 @@ class Sheet {
    * Ensures data is loaded exactly once on demand.
    */
   getWindow() {
-    if (!this._isFetched) {
-      this.fetchWindow();
-    }
+    this.fetch();
     return this._window;
   }
 
@@ -52,11 +52,19 @@ class Sheet {
    * Uses 0-based row and column offsets.
    */
   get(rowOffset, colOffset) {
-    const window = this.getWindow();
-    if (rowOffset < 0 || rowOffset >= window.length) return null;
-    const row = window[rowOffset];
-    if (!row || colOffset < 0 || colOffset >= row.length) return null;
-    return row[colOffset];
+    try {
+      this.fetch();
+      if (rowOffset < 0 || rowOffset >= this._window.length) {
+        throw new Error(`Row offset ${rowOffset} out of bounds. Window length: ${this._window.length}`);
+      }
+      const row = this._window[rowOffset];
+      if (!row || colOffset < 0 || colOffset >= row.length) {
+        throw new Error(`Column offset ${colOffset} out of bounds at row ${rowOffset}. Row width: ${row?.length || 0}`);
+      }
+      return row[colOffset];
+    } catch (e) {
+      throw new Error(`[Physical Layer: ${this.longName}] get(${rowOffset}, ${colOffset}) Failure: ${e.message}`);
+    }
   }
 
   /**
@@ -64,46 +72,120 @@ class Sheet {
    * Uses 0-based row and column offsets.
    */
   set(rowOffset, colOffset, value) {
-    const window = this.getWindow();
-    if (rowOffset >= 0 && rowOffset < window.length) {
-      const row = window[rowOffset];
-      if (row && colOffset >= 0 && colOffset < row.length) {
-        row[colOffset] = value;
+    try {
+      this.fetch();
+      if (rowOffset < 0 || rowOffset >= this._window.length) {
+        throw new Error(`Cannot SET row offset ${rowOffset}. Out of bounds. Window length: ${this._window.length}`);
       }
+      const row = this._window[rowOffset];
+      if (!row || colOffset < 0 || colOffset >= row.length) {
+        throw new Error(`Cannot SET column offset ${colOffset} at row ${rowOffset}. Out of bounds. Row width: ${row?.length || 0}`);
+      }
+      row[colOffset] = value;
+    } catch (e) {
+      throw new Error(`[Physical Layer: ${this.longName}] set(${rowOffset}, ${colOffset}) Failure: ${e.message}`);
     }
   }
 
   /**
-   * Fetches the data window into the private matrix.
+   * Fetches data into the private matrix. 
+   * Supports incremental expansion (backward and forward).
+   * @param {number} [startRow] Physical row to start from (default: firstDataRowIndex)
+   * @param {number} [numRows] Number of rows to fetch (default: everything to bottom)
    */
-  fetchWindow() {
-    this._isFetched = true;
+  fetch(startRow = null, numRows = null) {
+    try {
+      const isDefaultRequest = (startRow === null && numRows === null);
+
+      // 1. Lazy Guard (Skip if we already have the default full fetch window)
+      if (isDefaultRequest && this._isFetched) return;
+
+      // 2. Virtual Sheet Guard
+      if (!this.sheet) {
+        this._isFetched = true;
+        if (!this._windowStartRow) this._windowStartRow = this.firstDataRowIndex;
+        return;
+      }
+
+      // 3. Resolve Requested Range
+      const range = this._resolveRequestedRange(startRow, numRows);
+      if (range.numRows <= 0) return;
+
+      // 4. Orchestrate Load
+      if (!this._isFetched) {
+        // Build the initial window
+        this._performInitialFetch(range);
+      } else {
+        // Expand the existing window perimeter
+        this._expandWindow(range);
+      }
+
+      // 5. Cleanup
+      this._trimTrailingRows();
+      this._isFetched = true;
+    } catch (e) {
+      throw new Error(`[Physical Layer: ${this.longName}] fetch(${startRow}, ${numRows}) Failure: ${e.message}`);
+    }
+  }
+
+  /**
+   * Private Helper: Resolves the requested physical range into a range object.
+   */
+  _resolveRequestedRange(startRow, numRows) {
     const lastRow = this.sheet.getLastRow();
     const lastCol = this.sheet.getLastColumn();
-    
-    if (lastRow < this.firstDataRowIndex || lastCol === 0) {
-      this._window = [];
-      this.windowDataLength = 0;
-      this._cachedLastRowIndex = this.firstDataRowIndex - 1;
-      return;
+    const reqStart = startRow || this.firstDataRowIndex;
+    const reqNum = numRows || (lastRow >= reqStart ? (lastRow - reqStart + 1) : 0);
+    return { start: reqStart, numRows: reqNum, lastCol: lastCol };
+  }
+
+  /**
+   * Private Helper: Performs the first-time data load for a sheet.
+   */
+  _performInitialFetch(range) {
+    myLog("trace", "Sheet %s: Initial fetch of %d rows from row %d", this.sheetName, range.numRows, range.start);
+    this._window = this.sheet.getRange(range.start, 1, range.numRows, range.lastCol).getValues();
+    this._windowStartRow = range.start;
+  }
+
+  /**
+   * Private Helper: Adds rows to the top or bottom of the existing window.
+   */
+  _expandWindow(range) {
+    // 1. Backward Extension (Prepend)
+    if (range.start < this._windowStartRow) {
+      const gapRows = this._windowStartRow - range.start;
+      myLog("info", "Sheet %s: Extending window BACKWARDS by %d rows", this.sheetName, gapRows);
+      const gapData = this.sheet.getRange(range.start, 1, gapRows, range.lastCol).getValues();
+      this._window = gapData.concat(this._window);
+      this._windowStartRow = range.start;
     }
-    
-    const numRows = (lastRow - this.firstDataRowIndex) + 1;
-    myLog("trace", "Fetching %d rows from %s (LastRow: %d, Start: %d)", numRows, this.sheetName, lastRow, this.firstDataRowIndex);
-    const rawData = this.sheet.getRange(this.firstDataRowIndex, 1, numRows, lastCol).getValues();
-    
-    // Use the consolidated helper to find the boundary
-    const lastIdx = this._findLastPopulatedIndex(rawData);
 
-    // Cache the physical last row calculation
-    this._cachedLastRowIndex = (lastIdx === -1) ? this.firstDataRowIndex - 1 : (this.firstDataRowIndex + lastIdx);
+    // 2. Forward Extension (Append)
+    const currentEndRow = this._windowStartRow + this._window.length - 1;
+    const reqEndRow = range.start + range.numRows - 1;
+    if (reqEndRow > currentEndRow) {
+      const gapStart = currentEndRow + 1;
+      const gapRows = reqEndRow - currentEndRow;
+      myLog("info", "Sheet %s: Extending window FORWARDS by %d rows", this.sheetName, gapRows);
+      const gapData = this.sheet.getRange(gapStart, 1, gapRows, range.lastCol).getValues();
+      this._window = this._window.concat(gapData);
+    }
+  }
 
-    // Trim the matrix to only include rows with actual data
-    this._window = (lastIdx === -1) ? [] : rawData.slice(0, lastIdx + 1);
+  /**
+   * Private Helper: Removes empty trailing rows from the window.
+   */
+  _trimTrailingRows() {
+    const lastPopulatedIdx = this._findLastPopulatedIndex(this._window);
+    if (lastPopulatedIdx === -1) {
+      this._window = [];
+    } else if (lastPopulatedIdx < this._window.length - 1) {
+      const trimmedCount = this._window.length - (lastPopulatedIdx + 1);
+      myLog("trace", "Sheet %s: Trimmed %d empty trailing rows", this.sheetName, trimmedCount);
+      this._window = this._window.slice(0, lastPopulatedIdx + 1);
+    }
     this.windowDataLength = this._window.length;
-    this.currentRowOffset = 0;
-    
-    myLog("info", "Fetched and trimmed %d rows for sheet %s", this.windowDataLength, this.longName);
   }
 
   /**
@@ -132,6 +214,9 @@ class Sheet {
       return Math.max(this._cachedLastRowIndex, this._maxWrittenRow || 0);
     }
 
+    // Guard for virtual sheets
+    if (!this.sheet) return this._maxWrittenRow || (this.firstDataRowIndex - 1);
+
     const lastCol = this.sheet.getLastColumn();
     const lastRow = this.sheet.getLastRow();
     
@@ -151,10 +236,18 @@ class Sheet {
     return Math.max(this._cachedLastRowIndex, this._maxWrittenRow || 0);
   }
 
-  getLabels(labelRow = 1) {
-    const lastCol = this.sheet.getLastColumn();
-    if (lastCol === 0) return [];
-    return this.sheet.getRange(labelRow, 1, 1, lastCol).getValues()[0];
+  /**
+   * Fetches the raw header row from the sheet.
+   */
+  _fetchHeaderRow(labelRow = 1) {
+    if (!this.sheet) return [];
+    try {
+      const labels = this.sheet.getRange(labelRow, 1, 1, this.sheet.getLastColumn()).getValues()[0];
+      return labels;
+    } catch (e) {
+      myLog("warn", "Failed to fetch labels for sheet %s", this.sheetName);
+      return [];
+    }
   }
 
   clearDataArea() {
@@ -196,10 +289,12 @@ class Sheet {
    * Releases the cached 2D data matrix to prevent GAS memory limits.
    */
   flushMemory() {
-    this._window = null;
+    this._window = [];
     this._cachedLastRowIndex = null;
     this._maxWrittenRow = 0;
     this._isFetched = false;
+    this._windowStartRow = null;
+    this.windowDataLength = 0;
     myLog("trace", "Flushed _window memory for %s", this.longName);
   }
 

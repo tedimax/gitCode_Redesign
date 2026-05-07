@@ -15,13 +15,12 @@ class AnnualSheet extends UpdateTable {
 
     // 1. Initialize Sub-Services (Composition)
     const sourceTable = getSheetInstance(properties.SourceSheet || CONFIG_CONSTANTS.DEFAULT_ANNUAL_SUMMARY_SOURCE_TABLE);
+    if (properties.SourceFirstRow) {
+      sourceTable.firstDataRowIndex = Number(properties.SourceFirstRow);
+      myLog("info", "AnnualSheet: Forcing SourceFirstRow override -> %d", sourceTable.firstDataRowIndex);
+    }
     const namesTable = getSheetInstance(properties.NamesSheet || CONFIG_CONSTANTS.DEFAULT_ANNUAL_SUMMARY_NAMES_TABLE);
 
-    // --- CRITICAL OVERRIDE ---
-    // The Fact Engine must scan the entire ledger history to build correct balances.
-    // We ignore any registry settings and force a start at Row 2.
-    sourceTable.firstDataRowIndex = 2;
-    sourceTable.flushMemory();
 
     this.ledger = new AnnualLedger(sourceTable, namesTable);
     this.reporter = new AnnualReporter();
@@ -42,12 +41,21 @@ class AnnualSheet extends UpdateTable {
     const targetYear = yearArg || this._config.year || this.sheetName.split("_")[0];
     myLog("info", "AnnualSheet: Orchestrating report for %s", targetYear);
 
-    // 1. Get Facts from Ledger (Scan once, cache forever)
+    // 1. Load Facts (Strategy: Configurable Load)
     const start = Date.now();
+    const isFullLoad = this._config.FullLoad === true || this._config.FullLoad === "true";
+    
+    if (isFullLoad) {
+      this.ledger.loadFull();
+    } else {
+      this.ledger.loadYear(targetYear);
+    }
+    
     const facts = this.ledger.getFacts();
-    myLog("info", "Performance: Ingestion (10k+ rows) took %dms.", Date.now() - start);
+    const loadMode = isFullLoad ? "Full Scan" : "Targeted Scan";
+    myLog("info", "Performance: %s for %s took %dms.", loadMode, targetYear, Date.now() - start);
 
-    if (!facts) return [];
+    if (!facts || facts.yearlyData.size === 0) return [];
 
     // 2. Analyze the facts for the specific year
     const analysisStart = Date.now();
@@ -76,59 +84,63 @@ class AnnualSheet extends UpdateTable {
   // PERSISTENCE LAYER (Sheet-Specific Styles)
   // =========================================================================
 
-  _applyStyles(snapshot = []) {
+  _applyStyles(snapshot = [], sheetNameOverride = null) {
     const startRow = Math.max(1, this.firstDataRowIndex || 2);
     const numRows = snapshot.length;
     if (numRows === 0) return;
 
-    this.sheet.clear();
-    this.sheet.clearFormats();
-    this.sheet.setHiddenGridlines(true);
-    this.sheet.getRange(startRow, 1, numRows, 4).setValues(snapshot);
+    const targetSheet = sheetNameOverride ? this.ss.getSheetByName(sheetNameOverride) : this.sheet;
+    if (!targetSheet) {
+      myLog("warn", "AnnualSheet: Styling target sheet '%s' not found. Skipping styling.", sheetNameOverride || this.sheetName);
+      return;
+    }
+
+    targetSheet.clear();
+    targetSheet.clearFormats();
+    targetSheet.setHiddenGridlines(true);
+    targetSheet.getRange(startRow, 1, numRows, 4).setValues(snapshot);
     SpreadsheetApp.flush();
 
-    const dataRange = this.sheet.getRange(startRow, 1, numRows, 4);
+    const dataRange = targetSheet.getRange(startRow, 1, numRows, 4);
     dataRange.setFontFamily("Montserrat").setFontSize(10).setHorizontalAlignment("right").setVerticalAlignment("middle");
 
-    const styleMap = this.STYLE_MAP;
     this.renderer.styleInstructions.forEach(instr => {
-      const r = instr.range;
-      const s = styleMap[instr.styleId];
+      const s = this.STYLE_MAP[instr.styleId];
       if (!s) return;
-      const range = this.sheet.getRange(startRow + r.rowOffset, r.col, r.numRows, r.numCols);
-      if (s.merge) range.merge();
-      if (s.fontSize) range.setFontSize(s.fontSize);
-      if (s.fontWeight) range.setFontWeight(s.fontWeight);
-      if (s.fontStyle) range.setFontStyle(s.fontStyle);
-      if (s.horizontalAlignment) range.setHorizontalAlignment(s.horizontalAlignment);
-      if (s.fontColor) range.setFontColor(s.fontColor);
-      if (s.numberFormat) range.setNumberFormat(s.numberFormat);
+
+      const range = targetSheet.getRange(startRow + instr.range.rowOffset, instr.range.col, instr.range.numRows, instr.range.numCols);
+      
+      Object.entries(s).forEach(([key, val]) => {
+        switch (key) {
+          case "merge": if (val) range.merge(); break;
+          case "fontSize": range.setFontSize(val); break;
+          case "fontWeight": range.setFontWeight(val); break;
+          case "fontStyle": range.setFontStyle(val); break;
+          case "fontColor": range.setFontColor(val); break;
+          case "background": range.setBackground(val); break;
+          case "border": if (val) range.setBorder(true, null, true, null, null, null, "black", SpreadsheetApp.BorderStyle.SOLID); break;
+          case "numberFormat": range.setNumberFormat(val); break;
+          case "horizontalAlignment": range.setHorizontalAlignment(val); break;
+        }
+      });
     });
 
-    const currencyFormat = "£#,##0.00;[Red]-£#,##0.00;\"\"";
-    this.sheet.getRange(startRow + 2, 2, numRows - 2, 3).setNumberFormat(currencyFormat);
-    this.sheet.setColumnWidth(1, 280);
-    this.sheet.setColumnWidths(2, 4, 120);
+    // Apply Layout & Bulk Formatting from constants
+    const dr = REPORT_LAYOUT.DATA_REGION;
+    const dataStyle = REPORT_STYLE_MAP[dr.styleId];
+    if (dataStyle && dataStyle.numberFormat) {
+      this.sheet.getRange(startRow + dr.rowOffset, dr.col, numRows - dr.rowOffset, dr.numCols)
+        .setNumberFormat(dataStyle.numberFormat);
+    }
+
+    REPORT_LAYOUT.COLUMN_WIDTHS.forEach(conf => {
+      if (conf.count) this.sheet.setColumnWidths(conf.index, conf.count, conf.width);
+      else this.sheet.setColumnWidth(conf.index, conf.width);
+    });
   }
 
   get STYLE_MAP() {
-    return {
-      "title": { fontSize: 14, fontWeight: "bold", horizontalAlignment: "center", merge: true },
-      "sectionHeader": { fontSize: 12, fontWeight: "bold", horizontalAlignment: "right" },
-      "columnHeader": { fontSize: 12, fontWeight: "bold", horizontalAlignment: "right" },
-      "columnHeaderLabel": { fontSize: 10, fontWeight: "normal", horizontalAlignment: "right" },
-      "categoryHeader": { fontSize: 10, fontWeight: "bold", fontStyle: "italic", horizontalAlignment: "right" },
-      "categoryValue": { fontSize: 10, fontWeight: "bold", fontStyle: "italic", horizontalAlignment: "right" },
-      "categoryValueRed": { fontSize: 10, fontWeight: "bold", fontStyle: "italic", horizontalAlignment: "right", fontColor: "red" },
-      "grandTotalValue": { fontWeight: "bold" },
-      "grandTotalValueRed": { fontWeight: "bold", fontColor: "red" },
-      "expenditureValue": { fontColor: "red" },
-      "alert": { fontColor: "red", fontWeight: "bold" },
-      "alertNormal": { fontColor: "red" },
-      "redFont": { fontColor: "red" },
-      "blackFont": { fontColor: "black" },
-      "currency": { numberFormat: "£#,##0.00;[Red]-£#,##0.00;\"\"" }
-    };
+    return REPORT_STYLE_MAP;
   }
 }
 

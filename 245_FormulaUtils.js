@@ -110,7 +110,7 @@ const FormulaUtils = {
       getVal: (longName, colName, rowOff) => {
         const instance = getCachedInstance(longName);
         if (!instance) return "";
-        return instance.getCellValueByRowOffsetColumnLabel(rowOff, colName);
+        return instance.getValueByLabel(rowOff, colName);
       },
       // Fast map lookup
       lookup: (longName, keyCol, valCol, searchVal) => {

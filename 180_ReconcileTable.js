@@ -197,7 +197,7 @@ class ReconcileTable extends Table {
         currentTxId = rootToTxId.get(rootIndex);
       }
       
-      const outRow = new Array(this.getColLabels().length).fill("");
+      const outRow = new Array(this.getLabels().length).fill("");
       const reconcileCols = this.getSymbolicOffsets();
       
       if (reconcileCols.pk !== -1) outRow[reconcileCols.pk] = item.PK;
@@ -234,7 +234,7 @@ class ReconcileTable extends Table {
       formulas[col] = `=ARRAYFORMULA(IF(${rng("PK")}="","",VLOOKUP(${rng("PK")}, {${mRng("PK")}, ${mRng(col)}}, 2, 0)))`;
     });
 
-    const labels = this.getColLabels();
+    const labels = this.getLabels();
     const formulaRow = new Array(labels.length).fill("");
     
     labels.forEach((label, idx) => {
@@ -310,7 +310,7 @@ class ReconcileTable extends Table {
       tx.GlobalGroupID = localToGlobalTxMap.get(tx.Group);
 
       // A. Stage data for NewGroups
-      const gRow = new Array(groupsTable.getColLabels().length).fill("");
+      const gRow = new Array(groupsTable.getLabels().length).fill("");
       
       if(groupCols.pk !== -1) gRow[groupCols.pk] = tx.PK;
       if(groupCols.group !== -1) gRow[groupCols.group] = tx.GlobalGroupID;
@@ -321,7 +321,7 @@ class ReconcileTable extends Table {
 
       // B. Update Merged Table (Physical Set)
       const cleanPk = StringUtils.sanitizeName(tx.PK);
-      const mRowOff = mergedTable.getRowOffsetByKey(cleanPk);
+      const mRowOff = mergedTable.getRowOffset(cleanPk);
 
       if (mRowOff !== undefined) {
          const pRow = mRowOff + mergedTable.firstDataRowIndex;
@@ -336,7 +336,7 @@ class ReconcileTable extends Table {
         const ledgerName = this._getLedgerNameFromPrefix(prefix);
         if (ledgerName) {
           const logCols = logTable.getSymbolicOffsets();
-          const logRow = new Array(logTable.getColLabels().length).fill("");
+          const logRow = new Array(logTable.getLabels().length).fill("");
           
           if(logCols.sheetName !== -1) logRow[logCols.sheetName] = ledgerName;
           if(logCols.transactionId !== -1) logRow[logCols.transactionId] = tx.PK;
@@ -360,7 +360,7 @@ class ReconcileTable extends Table {
         throw new Error(`CRITICAL CONFIG ERROR: NewAccounts_ReconcileLog must be configured as an UpdateTable in the Registry to commit ${logNewData.length} logs.`);
       }
     } else {
-      myLog("warn", "No rows staged for ReconcileLog. ColLabels length: %d", logTable.getColLabels().length);
+      myLog("warn", "No rows staged for ReconcileLog. ColLabels length: %d", logTable.getLabels().length);
     }
 
     // 4. Clear Rows from Reconcile (clearing preserves named ranges without triggering massive recalculations)

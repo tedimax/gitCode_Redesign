@@ -210,7 +210,7 @@ class UpdateTable extends Table {
     const newRowsSnapshot = newData;
     const rowsToUpdate = [];
     const rowsToAdd = [];
-    const labels = this.getColLabels();
+    const labels = this.getLabels();
 
     // PERFORMANCE: Pre-calculate field types for all columns once
     const fieldTypes = labels.map(label => Registry.getType(this.longName, label));

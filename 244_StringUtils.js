@@ -50,10 +50,25 @@ const StringUtils = (() => {
     return path.split('.').reduce((prev, curr) => prev ? prev[curr] : undefined, obj);
   };
 
+  /**
+   * Converts a 0-based column index to its Google Sheets letter notation (A, B, C... AA, AB...).
+   */
+  const columnToLetter = (index) => {
+    let col = index + 1;
+    let letter = "";
+    while (col > 0) {
+      let modulo = (col - 1) % 26;
+      letter = String.fromCharCode(modulo + 65) + letter;
+      col = Math.floor((col - modulo - 1) / 26);
+    }
+    return letter;
+  };
+
   return {
     toRangeName,
     sanitizeName,
     interpolate,
-    resolveKey
+    resolveKey,
+    columnToLetter
   };
 })();

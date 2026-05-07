@@ -8,61 +8,106 @@ const TypeUtils = {
   
   /**
    * Casts a raw value to the specified type.
-   * Functional Pattern: Pure transformation.
+   * Functional Pattern: Pure transformation. No side effects/logging.
    */
   castType(val, type) {
-    if (val === null || val === undefined || val === "") return "";
+    try {
+      if (val === null || val === undefined || val === "") return "";
+      
+      const cleanType = (type || "String").trim();
+      
+      switch (cleanType) {
+        case 'String':
+          if (val instanceof Date) return DateUtils.toISODate(val);
+          if (typeof val === 'number') return String(val);
+          return String(val).trim().replace(/[\x00-\x1F\x7F-\x9F]/g, "");
+          
+        case 'Integer':
+          return parseInt(val, 10) || 0;
+          
+        case 'Currency':
+          const cleanCurr = String(val).replace(/[£$,\s]/g, '');
+          return parseFloat(cleanCurr) || 0;
+
+        case 'Percentage':
+          const strVal = String(val).trim();
+          const isPercentString = strVal.endsWith('%');
+          const cleanPerc = strVal.replace(/[£$,%\s]/g, '');
+          let numPerc = parseFloat(cleanPerc) || 0;
+          if (isPercentString) numPerc = numPerc / 100;
+          return numPerc;
+          
+        case 'Boolean':
+          return this.isTrue(val);
+          
+        case 'Date':
+          return DateUtils.toISODate(val);
+          
+        case 'DateTime':
+          return DateUtils.toISODateTime(val);
+          
+        case 'Time':
+          return DateUtils.toISOTime(val);
+          
+        case 'YYYY':
+          const year = parseInt(val, 10);
+          return isNaN(year) ? "" : String(year).padStart(4, '0');
+          
+        case 'Key1':
+        case 'Key2':
+          return String(val).trim();
+          
+        case 'rangeNames':
+          return String(val).trim().replace(CONFIG_CONSTANTS.RANGE_NAME_REGEX, '_');
+
+        case 'DateRange':
+          return this._castDateRange(val);
+          
+        default:
+          return String(val).trim();
+      }
+    } catch (e) {
+      throw new Error(`[Schema Layer] castType failure for type "${type}": ${e.message}`);
+    }
+  },
+
+  /**
+   * The Border Guard.
+   * Performs high-fidelity validation and logs warnings with context.
+   * Called ONLY during ingestion/transformation (the system boundary).
+   */
+  validate(val, type, context = null) {
+    if (val === null || val === undefined || val === "") return;
     
     const cleanType = (type || "String").trim();
-    
-    switch (cleanType) {
-      case 'String':
-        if (val instanceof Date) return DateUtils.toISODate(val);
-        if (typeof val === 'number') return String(val); // Safety: Never regex-clean numbers
-        // Trim and remove only non-printable control characters (ASCII 0-31)
-        return String(val).trim().replace(/[\x00-\x1F\x7F-\x9F]/g, "");
-        
-      case 'Integer':
-        const intVal = parseInt(val, 10);
-        return isNaN(intVal) ? 0 : intVal;
-        
-      case 'Currency':
-      case 'Percentage':
-        // Strip symbols and commas, then return as a pure Number
-        const cleanVal = String(val).replace(/[£$,\s]/g, '');
-        const numVal = parseFloat(cleanVal);
-        return isNaN(numVal) ? 0 : numVal;
-        
-      case 'Boolean':
-        return this.isTrue(val);
-        
-      case 'Date':
-        return DateUtils.toISODate(val);
-        
-      case 'DateTime':
-        return DateUtils.toISODateTime(val);
-        
-      case 'Time':
-        return DateUtils.toISOTime(val);
-        
-      case 'YYYY':
-        const year = parseInt(val, 10);
-        return isNaN(year) ? "" : String(year).padStart(4, '0');
-        
-      case 'Key1':
-      case 'Key2':
-        return String(val).trim(); // Specialized logic in Table classes
-        
-      case 'rangeNames':
-        return String(val).trim().replace(CONFIG_CONSTANTS.RANGE_NAME_REGEX, '_');
+    const ctxStr = context ? ` [${context.sheet} Row ${context.row}, Col "${context.col}"]` : "";
 
-      case 'DateRange':
-        // Expects "datetime - datetime" or similar
-        return this._castDateRange(val);
+    switch (cleanType) {
+      case 'Key1':
+        // Permissive suffix: Allows -, #, ., _ for negative hashes and complex generated keys
+        if (!/^[A-Za-z0-9]+#20\d\d(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])_[A-Za-z0-9#._-]+$/.test(val)) {
+          myLog("warn", `TypeUtils: Invalid Key1 format "${val}". Expected "prefix#yyyymmdd_suffix".${ctxStr}`);
+        }
+        break;
+
+      case 'Integer':
+        if (isNaN(parseInt(val, 10))) {
+          myLog("warn", `TypeUtils: Schema expected Integer but received unparseable text "${val}".${ctxStr}`);
+        }
+        break;
+
+      case 'Currency':
+        const cleanCurr = String(val).replace(/[£$,\s]/g, '');
+        if (isNaN(parseFloat(cleanCurr))) {
+          myLog("warn", `TypeUtils: Schema expected Currency but received unparseable text "${val}".${ctxStr}`);
+        }
+        break;
         
-      default:
-        // Untyped fields default to clean String
-        return String(val).trim();
+      case 'Key1_Strict':
+         if (!/^[A-Za-z]+#20\d\d(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])_[A-Za-z0-9]+$/.test(val)) {
+          myLog("warn", `TypeUtils: Value "${val}" does not meet strict Key1 requirements.${ctxStr}`);
+        }
+        break;
     }
   },
   
@@ -110,8 +155,7 @@ const TypeUtils = {
    * Retrieves the type for a specific spreadsheet column from the registry.
    */
   getType(longName, columnName) {
-    if (!globals.dataTypesMap) return "String";
-    return globals.dataTypesMap.get(`${longName}:${columnName}`) || "String";
+    return Registry.getType(longName, columnName);
   },
 
   /**

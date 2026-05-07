@@ -9,6 +9,11 @@ const CONFIG_CONSTANTS = {
   SHEETS_CONFIG_NAME: "NewAccounts_Sheets",
   DATATYPES_SHEET_NAME: "NewAccounts_DataTypes",
   FORMULAS_SHEET_NAME: "NewAccounts_NewFormulas",
+  SHEETS_CONFIG_PK: "LongName",
+  DATATYPES_CONFIG_PK: "TargetField",
+  FORMULAS_CONFIG_PK: "TargetField",
+  DEFAULT_FIRST_ROW: 2,
+  DEFAULT_LABEL_ROW: 1,
   DEFAULT_TIMEZONE: "Europe/London",
   DECIMAL_PRECISION: 2,
   HASH_PREFIX: "#",
@@ -16,7 +21,9 @@ const CONFIG_CONSTANTS = {
   USE_NATIVE_DATES_FOR_SHEET: true, // Toggle between true (Native Date) and false (ISO String)
   DEFAULT_ANNUAL_SUMMARY_SOURCE_TABLE: "AnnualSummaries_Merged",
   DEFAULT_ANNUAL_SUMMARY_NAMES_TABLE: "AnnualSummaries_Names",
-  DEFAULT_ASSET_LEDGERS: ["Ledgers_Bank", "Ledgers_Cash", "Ledgers_Assets"]
+  DEFAULT_ASSET_LEDGERS: ["Ledgers_Bank", "Ledgers_Cash", "Ledgers_Assets"],
+  MANDATORY_TABLE_FIELDS: ["Account", "EntryType", "FY", "Date", "Group", "Amount"],
+  LEDGER_MANDATORY_SYMBOLS: ["amount", "account", "fy", "pk", "category", "entryType", "cleared"]
 };
 
 /**
@@ -83,5 +90,52 @@ const TABLE_COLUMN_MAP = {
     dateEnd: "DateEnd",
     interval: "Interval",
     unit: "Unit"
+  }
+};
+
+/**
+ * Styling Constants for Financial Reports
+ */
+const REPORT_STYLE_CONSTANTS = {
+  CURRENCY_FORMAT: '£#,##0.00;[Red]-£#,##0.00;""',
+  LABEL_COLUMN_WIDTH: 280,
+  DATA_COLUMN_WIDTH: 120
+};
+
+/**
+ * Visual Style Definitions for Reports
+ */
+const REPORT_STYLE_MAP = {
+  "title": { fontSize: 14, fontWeight: "bold", horizontalAlignment: "center", merge: true },
+  "sectionHeader": { fontSize: 12, fontWeight: "bold", horizontalAlignment: "right" },
+  "columnHeader": { fontSize: 12, fontWeight: "bold", horizontalAlignment: "right" },
+  "columnHeaderLabel": { fontSize: 10, fontWeight: "normal", horizontalAlignment: "right" },
+  "categoryHeader": { fontSize: 10, fontWeight: "bold", fontStyle: "italic", horizontalAlignment: "right" },
+  "categoryValue": { fontSize: 10, fontWeight: "bold", fontStyle: "italic", horizontalAlignment: "right" },
+  "categoryValueRed": { fontSize: 10, fontWeight: "bold", fontStyle: "italic", horizontalAlignment: "right", fontColor: "red" },
+  "grandTotalValue": { fontWeight: "bold" },
+  "grandTotalValueRed": { fontWeight: "bold", fontColor: "red" },
+  "expenditureValue": { fontColor: "red" },
+  "alert": { fontColor: "red", fontWeight: "bold" },
+  "alertNormal": { fontColor: "red" },
+  "redFont": { fontColor: "red" },
+  "blackFont": { fontColor: "black" },
+  "currency": { numberFormat: REPORT_STYLE_CONSTANTS.CURRENCY_FORMAT }
+};
+
+/**
+ * Sheet-Level Layout Configuration
+ */
+const REPORT_LAYOUT = {
+  COLUMN_WIDTHS: [
+    { index: 1, width: 280 },
+    { index: 2, width: 120, count: 3 }
+  ],
+  // The bulk data area formatting (relative to startRow)
+  DATA_REGION: {
+    rowOffset: 2,
+    col: 2,
+    numCols: 3,
+    styleId: "currency"
   }
 };

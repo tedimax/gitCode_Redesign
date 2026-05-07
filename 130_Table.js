@@ -6,15 +6,17 @@
  * Extends Sheet to provide configuration-driven logic, hashing, and type casting.
  */
 class Table extends Sheet {
-  constructor(ss, longName, properties = {}) {
+  constructor(ss, longName, properties = null) {
     super(ss, longName, properties);
     // Semi-private logic stores
-    this._properties = properties;
+    this._properties = this._config;
     this._columnMap = new Map();
     this._hashKeyMap = new Map();
     this._isHashed = false;
     this._keyMetadata = null;
-    this._orderedLabels = null;
+    this._labels = null;
+    this._validStartRow = null; // Physical row index of the first validated row
+    this._validEndRow = null;   // Physical row index of the last validated row
     
     // Initialize headers automatically upon creation
     this.initializeHeaderMap();
@@ -24,7 +26,12 @@ class Table extends Sheet {
    * Safe access to table constants from the Sheets config.
    */
   getProperty(columnName) {
-    return this._properties[columnName] || null;
+    if (this._properties[columnName] !== undefined) return this._properties[columnName];
+    
+    // Case-insensitive & Trimmed fallback
+    const lowerName = columnName.toLowerCase().trim();
+    const foundKey = Object.keys(this._properties).find(k => k.toLowerCase().trim() === lowerName);
+    return foundKey ? this._properties[foundKey] : null;
   }
 
   /**
@@ -35,11 +42,11 @@ class Table extends Sheet {
     const labelRow = this.getProperty("LabelRow") || 1;
     
     // 1. Capture and trim labels in their physical order
-    this._orderedLabels = this.getLabels(labelRow).map(l => String(l || "").trim());
+    this._labels = this._fetchHeaderRow(labelRow).map(label => String(label || "").trim());
     
     // 2. Build the lookup map functionally (Label -> Offset)
     this._columnMap = new Map(
-      this._orderedLabels
+      this._labels
         .map((label, offset) => [label, offset])
         .filter(([label]) => label !== "")
     );
@@ -50,8 +57,8 @@ class Table extends Sheet {
   /**
    * Returns an array of field labels in their physical column order.
    */
-  getColLabels() {
-    return this._orderedLabels || [];
+  getLabels() {
+    return this._labels || [];
   }
 
   /**
@@ -89,16 +96,27 @@ class Table extends Sheet {
   /**
    * Data Access by Label
    */
-  getCellValueByRowOffsetColumnLabel(rowOffset, label) {
-    const colOffset = this.getColOffset(label);
-    if (colOffset === -1) return null;
-    return this.get(rowOffset, colOffset);
+  getValueByLabel(rowOffset, label) {
+    try {
+      const colOffset = this.getColOffset(label);
+      if (colOffset === -1) {
+        throw new Error(`Column label "${label}" not found.`);
+      }
+      return this.get(rowOffset, colOffset);
+    } catch (e) {
+      throw new Error(`[Logical Layer: ${this.longName}] getValueByLabel(${rowOffset}, "${label}") Failure: ${e.message}`);
+    }
   }
 
-  setCellValueByRowOffsetColumnLabel(rowOffset, label, val) {
-    const colOffset = this.getColOffset(label);
-    if (colOffset !== -1) {
+  setValueByLabel(rowOffset, label, val) {
+    try {
+      const colOffset = this.getColOffset(label);
+      if (colOffset === -1) {
+        throw new Error(`Cannot SET value. Column label "${label}" not found.`);
+      }
       this.set(rowOffset, colOffset, val);
+    } catch (e) {
+      throw new Error(`[Logical Layer: ${this.longName}] setValueByLabel(${rowOffset}, "${label}") Failure: ${e.message}`);
     }
   }
 
@@ -107,13 +125,18 @@ class Table extends Sheet {
    * Functional Pattern: .reduce() over columnMap.
    */
   getRowObjectByOffset(rowOffset) {
-    if (rowOffset < 0 || rowOffset >= this.windowDataLength) return null;
-    
-    // Debug logs removed. Logic continues.
-    return Array.from(this._columnMap.entries()).reduce((obj, [label, colOff]) => {
-      obj[label] = this.get(rowOffset, colOff);
-      return obj;
-    }, {});
+    try {
+      if (rowOffset < 0 || rowOffset >= this.windowDataLength) {
+        throw new Error(`Invalid row offset ${rowOffset} for object conversion. Window length: ${this.windowDataLength}`);
+      }
+      
+      return Array.from(this._columnMap.entries()).reduce((obj, [label, colOff]) => {
+        obj[label] = this.get(rowOffset, colOff);
+        return obj;
+      }, {});
+    } catch (e) {
+      throw new Error(`[Logical Layer: ${this.longName}] getRowObjectByOffset(${rowOffset}) Failure: ${e.message}`);
+    }
   }
 
   /**
@@ -125,61 +148,73 @@ class Table extends Sheet {
     const targetKeyField = this.getProperty("Key");
     const keyFieldsRaw = this.getProperty("KeyFields");
 
-    if (targetKeyField) {
-      // Single Key (Priority)
-      const off = this.getColOffset(targetKeyField);
-      if (off === -1) myLog("error", "CRITICAL: Key column '" + targetKeyField + "' not found in " + this.longName);
-      this._keyMetadata = {
-        type: "single",
-        offset: off,
-        fieldType: TypeUtils.getType(this.longName, targetKeyField)
-      };
-    } else if (keyFieldsRaw) {
-      // Composite Key (Fallback)
-      const fieldList = String(keyFieldsRaw).split(",").map(field => field.trim());
-      this._keyMetadata = {
-        type: "composite",
-        fields: fieldList.map(field => {
-          const off = this.getColOffset(field);
-          if (off === -1) myLog("error", "CRITICAL: KeyField '" + field + "' not found in " + this.longName);
-          return {
-            offset: off,
-            type: TypeUtils.getType(this.longName, field)
-          };
-        })
-      };
-    } else {
-      // Emergency Fallback
-      const fallback = "RowID";
-      this._keyMetadata = {
-        type: "single",
-        offset: this.getColOffset(fallback),
-        fieldType: "Integer"
-      };
+    switch (true) {
+      case !!targetKeyField: {
+        // Single Key (Priority)
+        const keyOffset = this.getColOffset(targetKeyField);
+        if (keyOffset === -1) {
+          const labels = this.getLabels();
+          throw new Error(`CRITICAL: Key column '${targetKeyField}' not found in ${this.longName}. Available Columns: [${labels.join(", ")}]`);
+        }
+        
+        this._keyMetadata = {
+          type: "single",
+          offset: keyOffset,
+          fieldType: TypeUtils.getType(this.longName, targetKeyField)
+        };
+        break;
+      }
+      
+      case !!keyFieldsRaw: {
+        // Composite Key (Fallback)
+        const fieldList = String(keyFieldsRaw).split(",").map(field => field.trim());
+        this._keyMetadata = {
+          type: "composite",
+          fields: fieldList.map(field => {
+            const fieldOffset = this.getColOffset(field);
+            if (fieldOffset === -1) throw new Error("CRITICAL: KeyField '" + field + "' not found in " + this.longName);
+            
+            return {
+              offset: fieldOffset,
+              type: TypeUtils.getType(this.longName, field)
+            };
+          })
+        };
+        break;
+      }
+      
+      default:
+        const available = Object.keys(this._properties).join(", ");
+        throw new Error(`CRITICAL: Table ${this.longName} has no 'Key' or 'KeyFields' configured in the registry. Available properties: [${available}]. Check your spreadsheet column headers.`);
     }
   }
 
   /**
    * Calculates the primary key for a given row array.
    * Logic is shared between hashing and persistence matching.
+   * @param {Array} row The row data array.
+   * @param {number} pRow Optional physical row number for logging context.
    */
-  getRowKey(row) {
-    if (!this._keyMetadata) this._initializeKeyMetadata();
-    const meta = this._keyMetadata;
+  getRowKey(row, pRow = null) {
+    try {
+      if (!this._keyMetadata) this._initializeKeyMetadata();
 
-    if (meta.type === "single") {
-      if (meta.offset === -1) return null;
-      const rawVal = row[meta.offset];
-      if (rawVal === undefined || rawVal === "") return null;
-      const val = TypeUtils.castType(rawVal, meta.fieldType);
-      return val === null ? null : String(val).trim();
-    } else {
-      if (meta.fields.length === 0) return null;
-      const compositeValue = meta.fields.map(fieldMeta => {
-        const val = TypeUtils.castType(row[fieldMeta.offset], fieldMeta.type);
-        return String(val || "");
-      }).join("|");
-      return CryptoUtils.generateHash(compositeValue);
+      if (this._keyMetadata.type === "single") {
+        const rawVal = row[this._keyMetadata.offset];
+        if (rawVal === undefined || rawVal === "") return null;
+        
+        const val = TypeUtils.castType(rawVal, this._keyMetadata.fieldType);
+        return val === null ? null : String(val).trim();
+      } else {
+        if (this._keyMetadata.fields.length === 0) return null;
+        const compositeValue = this._keyMetadata.fields.map(fieldMeta => {
+          const val = TypeUtils.castType(row[fieldMeta.offset], fieldMeta.type);
+          return String(val || "");
+        }).join("|");
+        return CryptoUtils.generateHash(compositeValue);
+      }
+    } catch (e) {
+      throw new Error(`[Logical Layer: ${this.longName}] getRowKey() Failure: ${e.message}`);
     }
   }
 
@@ -206,7 +241,7 @@ class Table extends Sheet {
     return this._hashKeyMap;
   }
 
-  getRowOffsetByKey(key) {
+  getRowOffset(key) {
     return this.getHashKeyMap().get(String(key).trim());
   }
 
@@ -219,13 +254,13 @@ class Table extends Sheet {
     const cacheKey = `${keyCol}_${valCol}`;
     
     if (!this._lookupCacheMap.has(cacheKey)) {
-      if (this.windowDataLength === 0) this.fetchWindow();
+      this.fetch();
       
       const keyOffset = this.getColOffset(keyCol);
       const valOffset = this.getColOffset(valCol);
       
       if (keyOffset === -1 || valOffset === -1) return "";
-
+ 
       const lookupMap = new Map();
       this._window.forEach(row => {
         const k = row[keyOffset];
@@ -237,54 +272,80 @@ class Table extends Sheet {
     
     return this._lookupCacheMap.get(cacheKey).get(String(searchVal)) || "";
   }
+  
+  /**
+   * Ensures that at least 'count' rows from the bottom are loaded and validated.
+   */
+  ensureRows(count) {
+    const totalLast = this.getLastRowIndex();
+    const targetStart = Math.max(this.firstDataRowIndex, totalLast - count + 1);
+    
+    if (!this._windowStartRow || targetStart < this._windowStartRow) {
+      this.fetch(targetStart);
+    }
+  }
 
   /**
-   * Overrides Sheet.fetchWindow to apply Strict Typing and Perimeter Validation.
-   * Every cell is cast to its configured type and checked for mandatory requirements.
+   * Overrides Sheet.fetch to apply Incremental Strict Typing and Perimeter Validation.
    */
-  fetchWindow() {
-    super.fetchWindow();
-    
-    const labels = this.getColLabels();
-    const fieldTypes = labels.map(label => TypeUtils.getType(this.longName, label));
-    const physicalRowStart = this.firstDataRowIndex;
-    
-    myLog("trace", "Applying Strict Typing & Validation to %d rows in %s", this.windowDataLength, this.longName);
-    
-    const pkOff = this.getColOffset("PK");
-    const clearedOff = this.getColOffset("Cleared");
+  fetch(startRow = null, numRows = null) {
+    try {
+      super.fetch(startRow, numRows);
+      if (this.windowDataLength === 0) return;
 
-    this._window = this._window.map((row, rowOff) => {
-      const physicalRow = physicalRowStart + rowOff;
-      const pkValue = pkOff !== -1 ? row[pkOff] : "Unknown";
+      const labels = this.getLabels();
+      const fieldTypes = labels.map(label => TypeUtils.getType(this.longName, label));
+      const clearedOff = this.getColOffset("Cleared");
+
+      // Resolve which physical range needs validation
+      const winEndRow = this._windowStartRow + this.windowDataLength - 1;
       
-      // Resolve "Cleared" status for conditional validation
-      const rawCleared = clearedOff !== -1 ? row[clearedOff] : true;
-      const isCleared = (rawCleared === true || String(rawCleared).toUpperCase() === "TRUE");
+      // We only validate rows that haven't been validated in this session
+      const validateStart = this._validStartRow ? Math.min(this._windowStartRow, this._validStartRow) : this._windowStartRow;
+      const validateEnd = this._validEndRow ? Math.max(winEndRow, this._validEndRow) : winEndRow;
 
-      return row.map((cell, colOff) => {
-        const type = fieldTypes[colOff];
-        const label = labels[colOff];
-        const val = TypeUtils.castType(cell, type);
+      for (let pRow = validateStart; pRow <= validateEnd; pRow++) {
+        // Skip if already validated
+        if (this._validStartRow && this._validEndRow && pRow >= this._validStartRow && pRow <= this._validEndRow) continue;
 
-        // --- PERIMETER VALIDATION ---
-        // Mandatory fields are strictly enforced ONLY if the row is "Cleared"
-        let isMandatory = type.startsWith("*") || ["Account", "EntryType", "FinancialYear", "Date", "PK", "Group", "Amount"].includes(label);
+        const rowOff = pRow - this._windowStartRow;
+        const row = this._window[rowOff];
+        const keyValue = this.getRowKey(row) || "Unknown";
         
-        // If not cleared, we relax the mandatory requirement for Group/Amount/etc.
-        if (!isCleared) isMandatory = false;
+        const rawCleared = clearedOff !== -1 ? row[clearedOff] : true;
+        const isCleared = (rawCleared === true || String(rawCleared).toUpperCase() === "TRUE");
 
-        if (isMandatory && (val === "" || val === null || val === undefined)) {
-          throw new Error(`Validation Error: Mandatory field "${label}" is empty at row ${physicalRow} [PK: ${pkValue}] of ${this.longName}.`);
-        }
-        
-        if (isMandatory && label === "Group" && Number(val) === 0) {
-          throw new Error(`Validation Error: Group ID cannot be zero at row ${physicalRow} [PK: ${pkValue}] of ${this.longName}.`);
-        }
+        this._window[rowOff] = row.map((cell, colOff) => {
+          const type = fieldTypes[colOff];
+          const label = labels[colOff];
+          const context = { row: pRow, col: label, sheet: this.longName };
+          const val = TypeUtils.castType(cell, type, context);
+          let isMandatory = CONFIG_CONSTANTS.MANDATORY_TABLE_FIELDS.includes(label);
+          if (!isCleared) isMandatory = false;
 
-        return val;
-      });
-    });
+          if (isMandatory && (val === "" || val === null || val === undefined)) {
+            throw new Error(`Validation Error: Mandatory field "${label}" is empty at row ${pRow} [Key: ${keyValue}].`);
+          }
+          
+          if (isMandatory && label === "Group" && Number(val) === 0) {
+            throw new Error(`Validation Error: Group ID cannot be zero at row ${pRow} [Key: ${keyValue}].`);
+          }
+
+          return val;
+        });
+      }
+
+      // Update the validation bounds
+      this._validStartRow = this._windowStartRow;
+      this._validEndRow = winEndRow;
+    } catch (e) {
+      throw new Error(`[Logical Layer: ${this.longName}] fetch(${startRow}, ${numRows}) Failure: ${e.message}`);
+    }
+  }
+  
+  // Backwards compatibility for the call in Table.js constructor or other classes
+  fetchWindow() {
+    this.fetch();
   }
 
 }

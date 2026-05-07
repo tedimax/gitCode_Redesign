@@ -62,7 +62,7 @@ class ImportTable extends UpdateTable {
     });
 
     // 2. Auto-fill missing targets with implicit defaults
-    this.getColLabels().forEach(targetField => {
+    this.getLabels().forEach(targetField => {
       if (!this._compiledFormulaMap.has(targetField)) {
         try {
           const formula = `[${targetField}]`;
@@ -105,8 +105,8 @@ class ImportTable extends UpdateTable {
     myLog("info", "Fast Clone triggered for %s (pure 1:1 mapping detected). Bypassing execution engine...", this.longName);
     
     const sourceWindow = sourceSheet.getWindow();
-    const sourceLabels = sourceSheet.getColLabels();
-    const targetLabels = this.getColLabels();
+    const sourceLabels = sourceSheet.getLabels();
+    const targetLabels = this.getLabels();
 
     // 1. Build an index map: Target Column Index -> Source Column Index
     const sourceIndexMap = targetLabels.map(targetField => {
@@ -121,13 +121,18 @@ class ImportTable extends UpdateTable {
     }
 
     // 2. Ultra-fast aligned clone with pure functional type casting
-    return sourceWindow.map(sourceRow => {
+    return sourceWindow.map((sourceRow, sourceRowOff) => {
       return sourceIndexMap.map((sourceIdx, targetIdx) => {
         const val = sourceRow[sourceIdx];
         const targetField = targetLabels[targetIdx];
         const type = TypeUtils.getType(this.longName, targetField);
-        // Cast raw value, then immediately prepare for Google Sheets API
-        return TypeUtils.toSheetValue(TypeUtils.castType(val, type), type);
+        const castVal = TypeUtils.castType(val, type);
+        
+        // Border Guard: Validate even on Fast Clone
+        const context = { sheet: this.longName, row: sourceSheet.firstDataRowIndex + sourceRowOff, col: targetField };
+        TypeUtils.validate(castVal, type, context);
+        
+        return TypeUtils.toSheetValue(castVal, type);
       });
     });
   }
@@ -164,7 +169,7 @@ class ImportTable extends UpdateTable {
 
     // --- BUILD HYBRID EXECUTION PLAN ---
     // Avoids executing formulas for columns that are just 1:1 copies
-    const sourceLabels = sourceSheet.getColLabels();
+    const sourceLabels = sourceSheet.getLabels();
     const executionPlan = [];
     
     this._compiledFormulaMap.forEach((compiledFormula, targetField) => {
@@ -208,12 +213,20 @@ class ImportTable extends UpdateTable {
           ? sourceRow[step.sourceIdx] 
           : step.compiledFormula(rowOff, calc, context, this._properties);
         
-        // Apply Strict Type Casting
+        // 1. Apply Strict Type Casting (Functional & Silent)
         const fieldType = Registry.getType(this.longName, targetField);
         calc[targetField] = TypeUtils.castType(rawResult, fieldType);
         
+        // 2. The Border Guard: Perform validation and log warnings ONLY here (at the input)
+        const sourceSheet = Utils.getSourceSheet(this);
+        const physicalRow = sourceSheet ? rowOff + (sourceSheet.firstDataRowIndex || 2) : rowOff;
+        const contextObj = { sheet: this.longName, row: physicalRow, col: targetField };
+        TypeUtils.validate(calc[targetField], fieldType, contextObj);
+        
       } catch (e) {
-        myLog("error", "Transformation error at row %d, field %s: %s", rowOff, targetField, e.message);
+        const sourceSheet = Utils.getSourceSheet(this);
+        const physicalRow = sourceSheet ? rowOff + (sourceSheet.firstDataRowIndex || 2) : rowOff;
+        myLog("error", "Transformation error at row %d, field %s: %s", physicalRow, targetField, e.message);
         
         if (typeof AuditUtils !== 'undefined') {
           const sourceSheet = Utils.getSourceSheet(this);
@@ -236,7 +249,7 @@ class ImportTable extends UpdateTable {
   _serializeObjectsToMatrix(objects) {
     if (!Array.isArray(objects)) return [];
     
-    const labels = this.getColLabels();
+    const labels = this.getLabels();
 
     return objects.map(obj => {
       return labels.map(label => {

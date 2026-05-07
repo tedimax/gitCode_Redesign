@@ -20,7 +20,10 @@ function test_SingleYearReport() {
 
     // 2. Initialize the Orchestrator
     // We pass CreateIfMissing to allow instantiation of a new test sheet
-    const service = new AnnualSheet(ss, `TEST_Annual_${targetYear}`, { CreateIfMissing: true });
+    const service = new AnnualSheet(ss, "AnnualSummaries_Report", { 
+      SheetName: `TEST_Annual_${targetYear}`, 
+      CreateIfMissing: true 
+    });
 
     // 3. Import the Data
     const matrix = service.importData(targetYear);
@@ -47,7 +50,11 @@ function test_LongitudinalAnalysis() {
 
   try {
     const ss = _resolveAnnualSummariesSS();
-    const service = new AnnualSheet(ss, "TEST_TEMP", { CreateIfMissing: true });
+    // Use the production report context so we inherit the correct data source (AnnualSummaries_Merged)
+    const service = new AnnualSheet(ss, "AnnualSummaries_Report", { 
+      SheetName: "TEST_TEMP",
+      CreateIfMissing: true 
+    });
 
     // 1. Get the raw multi-year facts
     const facts = service.ledger.getFacts();
@@ -73,8 +80,8 @@ function test_LongitudinalAnalysis() {
     // 4. Write results to a new test sheet
     const sheet = _writeToNewTestSheet(ss, "TEST_Longitudinal_Trend", trendMatrix);
     
-    // 5. Premium Styling
-    if (sheet) {
+    // 5. Premium Styling (Safe for 0-row results)
+    if (sheet && history.length > 0) {
       sheet.getRange(1, 1, 1, 5).setFontFamily("Montserrat").setFontSize(10).setFontWeight("bold").setBackground("#f3f3f3");
       sheet.getRange(2, 1, history.length, 5).setFontFamily("Montserrat").setFontSize(10).setHorizontalAlignment("right");
       sheet.getRange(2, 2, history.length, 4).setNumberFormat("£#,##0.00;[Red]-£#,##0.00;\"\"");

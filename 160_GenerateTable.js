@@ -26,7 +26,7 @@ class GenerateTable extends ImportTable {
     }
 
     // Identify required columns in the source sheet for expansion math
-    const sourceLabels = sourceSheet.getColLabels();
+    const sourceLabels = sourceSheet.getLabels();
     const scheduleCols = sourceSheet.getSymbolicOffsets(TABLE_COLUMN_MAP.Schedules);
 
     if (scheduleCols.dateStart === -1 || scheduleCols.dateEnd === -1 || scheduleCols.interval === -1) {
