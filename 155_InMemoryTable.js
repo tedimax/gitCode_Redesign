@@ -21,9 +21,9 @@ class InMemoryTable extends ImportTable {
   commit(newData, mode = "replace") {
     myLog("info", "Committing InMemoryTable %s to RAM (Mode: %s)...", this.longName, mode);
 
+    // Fail-fast: Ensure newData is explicitly provided
     if (!newData) {
-      myLog("warn", "InMemoryTable.commit called without newData. Transforming...");
-      newData = this.transform() || [];
+      throw new Error(`fail-fast: InMemoryTable.commit() called without newData for ${this.longName}. Data must be explicitly prepared and passed.`);
     }
 
     if (mode === "add" && this._window) {

@@ -22,17 +22,9 @@ class Table extends Sheet {
     this.initializeHeaderMap();
   }
 
-  /**
-   * Safe access to table constants from the Sheets config.
-   */
-  getProperty(columnName) {
-    if (this._properties[columnName] !== undefined) return this._properties[columnName];
-    
-    // Case-insensitive & Trimmed fallback
-    const lowerName = columnName.toLowerCase().trim();
-    const foundKey = Object.keys(this._properties).find(k => k.toLowerCase().trim() === lowerName);
-    return foundKey ? this._properties[foundKey] : null;
-  }
+  // =========================================================================
+  // FOUNDATIONAL METHODS (CONSTRUCTOR HELPERS)
+  // =========================================================================
 
   /**
    * Builds a Map of Label -> Column Offset.
@@ -52,6 +44,19 @@ class Table extends Sheet {
     );
     
     myLog("trace", "Initialized columnMap for %s with %d labels", this.longName, this._columnMap.size);
+  }
+
+  // =========================================================================
+  // PROPERTY, COLUMN & CELL ACCESSORS (GETTERS/SETTERS)
+  // =========================================================================
+
+  /**
+   * Safe access to table constants from the Sheets config.
+   * Uses standardized O(1) lookup.
+   */
+  getProperty(columnName) {
+    const val = this._properties[columnName.toLowerCase().trim()];
+    return val !== undefined ? val : null;
   }
 
   /**
@@ -139,6 +144,89 @@ class Table extends Sheet {
     }
   }
 
+  // =========================================================================
+  // FETCH & VALIDATION ENGINE
+  // =========================================================================
+
+  /**
+   * Overrides Sheet.fetch to apply Incremental Strict Typing and Perimeter Validation.
+   */
+  fetch(startRow = null, numRows = null) {
+    try {
+      super.fetch(startRow, numRows);
+      if (this.windowDataLength === 0) return;
+
+      const labels = this.getLabels();
+      const fieldTypes = labels.map(label => TypeUtils.getType(this.longName, label));
+      const clearedOff = this.getColOffset("Cleared");
+
+      // Resolve which physical range needs validation
+      const winEndRow = this._windowStartRow + this.windowDataLength - 1;
+      
+      // We only validate rows that haven't been validated in this session
+      const validateStart = this._validStartRow ? Math.min(this._windowStartRow, this._validStartRow) : this._windowStartRow;
+      const validateEnd = this._validEndRow ? Math.max(winEndRow, this._validEndRow) : winEndRow;
+
+      for (let pRow = validateStart; pRow <= validateEnd; pRow++) {
+        // Skip if already validated
+        if (this._validStartRow && this._validEndRow && pRow >= this._validStartRow && pRow <= this._validEndRow) continue;
+
+        const rowOff = pRow - this._windowStartRow;
+        const row = this._window[rowOff];
+        const keyValue = this.getRowKey(row) || "Unknown";
+        
+        const rawCleared = clearedOff !== -1 ? row[clearedOff] : true;
+        const isCleared = (rawCleared === true || String(rawCleared).toUpperCase() === "TRUE");
+
+        this._window[rowOff] = row.map((cell, colOff) => {
+          const type = fieldTypes[colOff];
+          const label = labels[colOff];
+          const context = { row: pRow, col: label, sheet: this.longName };
+          const val = TypeUtils.castType(cell, type);
+          TypeUtils.validate(val, type, context);
+          let isMandatory = CONFIG_CONSTANTS.MANDATORY_TABLE_FIELDS.includes(label);
+          if (!isCleared) isMandatory = false;
+
+          if (isMandatory && (val === "" || val === null || val === undefined)) {
+            throw new Error(`Validation Error: Mandatory field "${label}" is empty at row ${pRow} [Key: ${keyValue}].`);
+          }
+          
+          if (isMandatory && label === "Group" && Number(val) === 0) {
+            throw new Error(`Validation Error: Group ID cannot be zero at row ${pRow} [Key: ${keyValue}].`);
+          }
+
+          return val;
+        });
+      }
+
+      // Update the validation bounds
+      this._validStartRow = this._windowStartRow;
+      this._validEndRow = winEndRow;
+    } catch (e) {
+      throw new Error(`[Logical Layer: ${this.longName}] fetch(${startRow}, ${numRows}) Failure: ${e.message}`);
+    }
+  }
+
+  fetchWindow() {
+    this.fetch();
+  }
+
+  /**
+   * Ensures that at least 'count' rows from the bottom are loaded and validated.
+   */
+  ensureRows(count) {
+    const totalLast = this.getLastRowIndex();
+    const targetStart = Math.max(this.firstDataRowIndex, totalLast - count + 1);
+    
+    if (!this._windowStartRow || targetStart < this._windowStartRow) {
+      this.fetch(targetStart);
+    }
+  }
+
+  // =========================================================================
+  // KEY MANAGEMENT & HASH UTILITIES
+  // =========================================================================
+
   /**
    * Internal helper to resolve key column metadata once.
    */
@@ -191,7 +279,6 @@ class Table extends Sheet {
 
   /**
    * Calculates the primary key for a given row array.
-   * Logic is shared between hashing and persistence matching.
    * @param {Array} row The row data array.
    * @param {number} pRow Optional physical row number for logging context.
    */
@@ -274,78 +361,40 @@ class Table extends Sheet {
   }
   
   /**
-   * Ensures that at least 'count' rows from the bottom are loaded and validated.
+   * Calculates required Named Ranges and delegates creation to the Physical layer.
    */
-  ensureRows(count) {
-    const totalLast = this.getLastRowIndex();
-    const targetStart = Math.max(this.firstDataRowIndex, totalLast - count + 1);
+  writeNamedRanges() {
+    if (!this.sheet) {
+      myLog("warn", "Cannot write named ranges for Virtual Sheet: %s", this.longName);
+      return;
+    }
     
-    if (!this._windowStartRow || targetStart < this._windowStartRow) {
-      this.fetch(targetStart);
-    }
-  }
-
-  /**
-   * Overrides Sheet.fetch to apply Incremental Strict Typing and Perimeter Validation.
-   */
-  fetch(startRow = null, numRows = null) {
-    try {
-      super.fetch(startRow, numRows);
-      if (this.windowDataLength === 0) return;
-
-      const labels = this.getLabels();
-      const fieldTypes = labels.map(label => TypeUtils.getType(this.longName, label));
-      const clearedOff = this.getColOffset("Cleared");
-
-      // Resolve which physical range needs validation
-      const winEndRow = this._windowStartRow + this.windowDataLength - 1;
-      
-      // We only validate rows that haven't been validated in this session
-      const validateStart = this._validStartRow ? Math.min(this._windowStartRow, this._validStartRow) : this._windowStartRow;
-      const validateEnd = this._validEndRow ? Math.max(winEndRow, this._validEndRow) : winEndRow;
-
-      for (let pRow = validateStart; pRow <= validateEnd; pRow++) {
-        // Skip if already validated
-        if (this._validStartRow && this._validEndRow && pRow >= this._validStartRow && pRow <= this._validEndRow) continue;
-
-        const rowOff = pRow - this._windowStartRow;
-        const row = this._window[rowOff];
-        const keyValue = this.getRowKey(row) || "Unknown";
-        
-        const rawCleared = clearedOff !== -1 ? row[clearedOff] : true;
-        const isCleared = (rawCleared === true || String(rawCleared).toUpperCase() === "TRUE");
-
-        this._window[rowOff] = row.map((cell, colOff) => {
-          const type = fieldTypes[colOff];
-          const label = labels[colOff];
-          const context = { row: pRow, col: label, sheet: this.longName };
-          const val = TypeUtils.castType(cell, type, context);
-          let isMandatory = CONFIG_CONSTANTS.MANDATORY_TABLE_FIELDS.includes(label);
-          if (!isCleared) isMandatory = false;
-
-          if (isMandatory && (val === "" || val === null || val === undefined)) {
-            throw new Error(`Validation Error: Mandatory field "${label}" is empty at row ${pRow} [Key: ${keyValue}].`);
-          }
-          
-          if (isMandatory && label === "Group" && Number(val) === 0) {
-            throw new Error(`Validation Error: Group ID cannot be zero at row ${pRow} [Key: ${keyValue}].`);
-          }
-
-          return val;
-        });
+    const startRow = (Number(this.getProperty("LabelRow")) || 1) + 1;
+    const endRow = this.sheet.getMaxRows();
+    const lastCol = this.sheet.getLastColumn();
+    
+    if (endRow < startRow || lastCol === 0) return;
+    
+    const numRows = endRow - startRow + 1;
+    const safeSheetName = Utils.cleanNameForRange(this.sheetName);
+    
+    // 1. SheetNameSheet (Row 1 to end)
+    this.writeNamedRange(safeSheetName + "Sheet", 1, 1, endRow, lastCol);
+    
+    // 2. SheetNameData (Row LabelRow+1 to end)
+    this.writeNamedRange(safeSheetName + "Data", startRow, 1, numRows, lastCol);
+    
+    // 3. SheetNameColumnName (Per column)
+    this.getLabels().forEach(label => {
+      if (!label) return;
+      const colOff = this.getColOffset(label);
+      if (colOff !== -1) {
+        const rangeName = safeSheetName + Utils.cleanNameForRange(label);
+        this.writeNamedRange(rangeName, startRow, colOff + 1, numRows, 1);
       }
-
-      // Update the validation bounds
-      this._validStartRow = this._windowStartRow;
-      this._validEndRow = winEndRow;
-    } catch (e) {
-      throw new Error(`[Logical Layer: ${this.longName}] fetch(${startRow}, ${numRows}) Failure: ${e.message}`);
-    }
-  }
-  
-  // Backwards compatibility for the call in Table.js constructor or other classes
-  fetchWindow() {
-    this.fetch();
+    });
+    
+    myLog("info", "Successfully wrote Named Ranges for %s", this.longName);
   }
 
 }

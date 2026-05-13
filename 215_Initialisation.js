@@ -1,9 +1,57 @@
 /**
+ * gitCode_Redesign - Patch Manager
+ * Handles global, JSON-based row overrides for auditability.
+ */
+const PatchManager = (() => {
+  const _patches = new Map(); // TableName -> Map(PK -> PatchObject)
+
+  return {
+    hydrate() {
+      if (!globals.correctionsObj) return;
+      
+      const pkOff = globals.correctionsObj.getColOffset(CONFIG_CONSTANTS.CORRECTIONS_CONFIG_PK);
+      const patchOff = globals.correctionsObj.getColOffset("PatchData");
+      
+      if (pkOff === -1 || patchOff === -1) {
+        throw new Error("Bootstrap Failure: PatchManager Corrections sheet is missing mandatory columns [GlobalID, Patch].");
+      }
+
+      globals.correctionsObj.getWindow().forEach(row => {
+        const globalId = String(row[pkOff] || "").trim();
+        const patchJson = String(row[patchOff] || "").trim();
+        
+        if (!globalId || !patchJson) return;
+
+        try {
+          const [tableName, pk] = globalId.split("#");
+          if (!tableName || !pk) {
+            throw new Error(`Bootstrap Failure: PatchManager found invalid GlobalID format '${globalId}'. Expected 'TableName#PK'.`);
+          }
+
+          if (!_patches.has(tableName)) _patches.set(tableName, new Map());
+          _patches.get(tableName).set(pk, JSON.parse(patchJson));
+        } catch (e) {
+          throw new Error(`Bootstrap Failure: PatchManager failed to parse JSON patch for '${globalId}': ${e.message}`);
+        }
+      });
+      
+      myLog("info", "PatchManager: Hydrated patches for %d tables.", _patches.size);
+    },
+
+    getPatch(tableName, pk) {
+      const tablePatches = _patches.get(tableName);
+      return tablePatches ? tablePatches.get(String(pk)) : null;
+    }
+  };
+})();
+
+/**
  * gitCode_Redesign - Registry Singleton
  * Provides high-performance, pre-indexed access to system configuration.
  */
 const Registry = (() => {
   const _sheets = new Map();    // LongName -> Config Object
+  const _sheetsByName = new Map(); // SheetName -> Config Object
   const _formulas = new Map();  // LongName -> Array of Formula Rows
   const _dataTypes = new Map(); // LongName:Column -> Type String
 
@@ -41,11 +89,15 @@ const Registry = (() => {
               Object.assign(config, extra);
               myLog("trace", "Merged %d extra properties for %s", Object.keys(extra).length, config.LongName);
             } catch (e) {
-              myLog("warn", "Failed to parse Properties for %s: %s", config.LongName, e.message);
+              throw new Error(`Bootstrap Failure: Failed to parse JSON Properties for sheet '${config.LongName}': ${e.message}`);
             }
           }
           
-          if (config.LongName) _sheets.set(config.LongName.trim(), config);
+          if (config.LongName) {
+            _sheets.set(config.LongName.trim(), config);
+            const sheetName = config.SheetName || config.LongName.split('_').slice(1).join('_');
+            _sheetsByName.set(sheetName.trim(), config);
+          }
         });
       }
 
@@ -53,7 +105,11 @@ const Registry = (() => {
       if (globals.formulasObj) {
         const targetFieldOff = globals.formulasObj.getColOffset(CONFIG_CONSTANTS.FORMULAS_CONFIG_PK);
         globals.formulasObj.getWindow().forEach(row => {
-          const fullRef = String(row[targetFieldOff] || "");
+          const fullRef = String(row[targetFieldOff] || "").trim();
+          
+          // --- NEW: Skip Comment Rows ---
+          if (fullRef.startsWith("//") || fullRef.startsWith("#") || fullRef === "") return;
+
           const match = fullRef.match(/^([^\[]+)\[/);
           if (match) {
             const longName = match[1].trim();
@@ -77,7 +133,14 @@ const Registry = (() => {
     },
 
     getSheetConfig: (longName) => _sheets.get(longName) || {},
-    getFormulasFor: (longName) => _formulas.get(longName) || [],
+    getSheetConfigBySheetName: (sheetName) => _sheetsByName.get(sheetName),
+    getFormulasFor: (longName) => {
+      const formulas = _formulas.get(longName) || [];
+      if (formulas.length === 0) {
+        myLog("info", "No explicit formulas found for %s in Registry. Defaulting to 1:1 mapping.", longName);
+      }
+      return formulas;
+    },
     getType: (longName, colName) => {
       const key = `${String(longName || "").trim()}:${String(colName || "").trim()}`.toUpperCase();
       return _dataTypes.get(key) || "String";
@@ -207,7 +270,27 @@ function initialize() {
     myLog("info", "Hydrated %d formulas.", globals.formulaMap.size);
   }
 
-  // Stage 6: Active Context
+  // Stage 6: Corrections Hydration (Registry-Driven)
+  const cName = CONFIG_CONSTANTS.CORRECTIONS_SHEET_NAME;
+  const cFirstRow = Registry.lookupValue(cName, "FirstRow") || CONFIG_CONSTANTS.DEFAULT_FIRST_ROW;
+  const cLabelRow = Registry.lookupValue(cName, "LabelRow") || CONFIG_CONSTANTS.DEFAULT_LABEL_ROW;
+  const cKey = Registry.lookupValue(cName, "Key") || CONFIG_CONSTANTS.CORRECTIONS_CONFIG_PK;
+
+  const correctionsConfig = {
+    SheetName: cName.split("_")[1],
+    FirstRow: cFirstRow,
+    LabelRow: cLabelRow,
+    Key: cKey
+  };
+  
+  try {
+    globals.correctionsObj = new Table(anchorSS, cName, correctionsConfig);
+    PatchManager.hydrate();
+  } catch (e) {
+    throw new Error(`Bootstrap Failure: System Initialization failed. Corrections sheet not found or failed to load. The patch layer is required.`);
+  }
+
+  // Stage 7: Active Context
   const activeSS = SpreadsheetApp.getActiveSpreadsheet();
   globals.activeSS = activeSS;
   globals.activeSSID = activeSS.getId();

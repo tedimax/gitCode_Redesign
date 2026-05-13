@@ -9,8 +9,11 @@ const TypeUtils = {
   /**
    * Casts a raw value to the specified type.
    * Functional Pattern: Pure transformation. No side effects/logging.
+   * @param {any} val The value to cast.
+   * @param {string} type The target type name.
+   * @param {Object} [context] Optional context for error reporting {sheet, row, col}.
    */
-  castType(val, type) {
+  castType(val, type, context = null) {
     try {
       if (val === null || val === undefined || val === "") return "";
       
@@ -67,7 +70,8 @@ const TypeUtils = {
           return String(val).trim();
       }
     } catch (e) {
-      throw new Error(`[Schema Layer] castType failure for type "${type}": ${e.message}`);
+      const ctxStr = context ? ` [${context.sheet} Row ${context.row}, Col "${context.col}"]` : "";
+      throw new Error(`[Schema Layer] castType failure for type "${type}"${ctxStr}: ${e.message}`);
     }
   },
 
@@ -86,26 +90,26 @@ const TypeUtils = {
       case 'Key1':
         // Permissive suffix: Allows -, #, ., _ for negative hashes and complex generated keys
         if (!/^[A-Za-z0-9]+#20\d\d(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])_[A-Za-z0-9#._-]+$/.test(val)) {
-          myLog("warn", `TypeUtils: Invalid Key1 format "${val}". Expected "prefix#yyyymmdd_suffix".${ctxStr}`);
+          throw new Error(`Schema Validation Failure: Invalid Key1 format "${val}". Expected "prefix#yyyymmdd_suffix".${ctxStr}`);
         }
         break;
 
       case 'Integer':
         if (isNaN(parseInt(val, 10))) {
-          myLog("warn", `TypeUtils: Schema expected Integer but received unparseable text "${val}".${ctxStr}`);
+          throw new Error(`Schema Validation Failure: Expected Integer but received unparseable text "${val}".${ctxStr}`);
         }
         break;
 
       case 'Currency':
         const cleanCurr = String(val).replace(/[£$,\s]/g, '');
         if (isNaN(parseFloat(cleanCurr))) {
-          myLog("warn", `TypeUtils: Schema expected Currency but received unparseable text "${val}".${ctxStr}`);
+          throw new Error(`Schema Validation Failure: Expected Currency but received unparseable text "${val}".${ctxStr}`);
         }
         break;
         
       case 'Key1_Strict':
          if (!/^[A-Za-z]+#20\d\d(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])_[A-Za-z0-9]+$/.test(val)) {
-          myLog("warn", `TypeUtils: Value "${val}" does not meet strict Key1 requirements.${ctxStr}`);
+          throw new Error(`Schema Validation Failure: Value "${val}" does not meet strict Key1 requirements.${ctxStr}`);
         }
         break;
     }

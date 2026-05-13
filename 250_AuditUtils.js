@@ -36,8 +36,7 @@ const AuditUtils = (() => {
     try {
       const auditTable = getSheetInstance(auditTableLongName);
       if (!auditTable) {
-        myLog("warn", "Could not flush Audit log: Table '%s' not found in registry.", auditTableLongName);
-        return; // Don't clear queue, in case it gets created later in the session
+        throw new Error(`Audit Logging Failure: Audit table '${auditTableLongName}' not found in registry. Cannot discard ${errorQueue.length} errors silently.`);
       }
 
       const startRow = auditTable.getLastRowIndex() + 1;

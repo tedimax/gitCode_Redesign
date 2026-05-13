@@ -14,14 +14,14 @@ class UpdateTable extends Table {
    * The Unified Orchestrator.
    * Executes the full ingestion and persistence lifecycle.
    */
-  runSync() {
-    myLog("info", "Starting runSync for %s...", this.longName);
+  execute() {
+    myLog("info", "Starting execution for %s...", this.longName);
     
-    // 1. Perform Ingestion (Transformation/Fetch)
-    const newData = this.importData() || [];
+    // 1. Prepare Ingestion (Transformation/Fetch)
+    const newData = this.prepare() || [];
     
     // 2. Persist results
-    const stats = this.commit(newData);
+    const stats = this.persist(newData);
 
     // 3. Post-Persistence Hooks (e.g. Styling)
     this.afterSync(stats, newData);
@@ -29,7 +29,7 @@ class UpdateTable extends Table {
     // 4. Final Cleanup
     this.flushMemory();
     
-    myLog("info", "runSync complete for %s. Stats: %s", this.longName, JSON.stringify(stats));
+    myLog("info", "Execution complete for %s. Stats: %s", this.longName, JSON.stringify(stats));
     return stats;
   }
 
@@ -42,33 +42,24 @@ class UpdateTable extends Table {
   }
 
   /**
-   * Ingestion phase.
-   * Overridden by subclasses (e.g., AnnualSheet) or defers to transform().
+   * Preparation phase.
+   * Overridden by subclasses (e.g., AnnualSheet, ImportTable) to gather or transform data.
    */
-  importData() {
-    return this.transform();
-  }
-
-  /**
-   * Placeholder for transformation logic.
-   * Overridden by subclasses (e.g., ImportTable) to provide automated mapping.
-   */
-  transform() {
-    myLog("trace", "Base UpdateTable: No transformation logic defined for %s", this.longName);
+  prepare() {
+    myLog("trace", "Base UpdateTable: No preparation logic defined for %s. Returning empty matrix.", this.longName);
     return [];
   }
 
   /**
    * Main entry point for persistence.
-   * @param {string} mode - 'replace', 'update', or 'add'. Defaults to props.ImportMethod.
+   * @param {string} mode - 'replace', 'update', or 'add'. Defaults to props.importmethod.
    */
-  commit(newData, mode = this.getProperty("ImportMethod") || "replace") {
-    myLog("info", "Committing changes to %s using mode: %s", this.longName, mode);
+  persist(newData, mode = this.getProperty("importmethod") || "replace") {
+    myLog("info", "Persisting changes to %s using mode: %s", this.longName, mode);
 
-    // Ensure newData is provided
+    // Fail-fast: Ensure newData is explicitly provided
     if (!newData) {
-       myLog("warn", "commit() called without newData for %s. Attempting transform...", this.longName);
-       newData = this.transform() || [];
+       throw new Error(`fail-fast: persist() called without newData for ${this.longName}. Data must be explicitly prepared and passed.`);
     }
 
     // 1. Transactional Locking: Prevent concurrent syncs from corrupting data
@@ -85,27 +76,23 @@ class UpdateTable extends Table {
       let stats = { added: 0, updated: 0 };
       switch (mode.toLowerCase()) {
         case "replace":
-        case "replacerows":
-          stats = this._commitReplace(newData);
+          stats = this._persistReplace(newData);
           break;
         case "add":
-        case "addrows":
-        case "append":
-          stats = this._commitAdd(newData);
+          stats = this._persistAdd(newData);
           break;
         case "update":
-        case "updaterows":
-          stats = this._commitUpdate(newData);
+          stats = this._persistUpdate(newData);
           break;
         default:
-          myLog("error", "Unknown import mode: %s. Defaulting to no-op.", mode);
+          throw new Error(`Persistence Error: Unknown persistence mode '${mode}' for ${this.longName}. Valid modes are 'replace', 'add', or 'update'.`);
       }
 
-      const isReplace = mode.toLowerCase() === "replace" || mode.toLowerCase() === "replacerows";
+      const isReplace = mode.toLowerCase() === "replace";
       const hasChanges = isReplace || stats.added > 0 || stats.updated > 0;
 
       if (hasChanges) {
-        // 4. Post-commit: Sort the target sheet
+        // 4. Post-persistence: Sort the target sheet
         this.sortData();
       }
 
@@ -125,8 +112,7 @@ class UpdateTable extends Table {
 
     const sortColOffset = this.getColOffset(sortField);
     if (sortColOffset === -1) {
-      myLog("warn", "SortField '%s' not found in %s.", sortField, this.longName);
-      return;
+      throw new Error(`Configuration Error: SortField '${sortField}' not found in table '${this.longName}'. Please check the registry.`);
     }
 
     // With the new caching optimization, pending writes are tracked via _maxWrittenRow,
@@ -152,7 +138,7 @@ class UpdateTable extends Table {
   /**
    * REPLACE Mode: Wipes all data and writes the fresh matrix.
    */
-  _commitReplace(newData) {
+  _persistReplace(newData) {
     this.clearDataArea();
 
     if (newData.length > 0) {
@@ -165,7 +151,7 @@ class UpdateTable extends Table {
   /**
    * ADD Mode: Appends only rows with unique keys not already in the sheet.
    */
-  _commitAdd(newData) {
+  _persistAdd(newData) {
     // 2. Filter out existing rows based on Key
     const rowsToAdd = newData.filter(row => {
       const rowKey = this.getRowKey(row);
@@ -185,7 +171,7 @@ class UpdateTable extends Table {
    * UPDATE Mode: Synchronizes existing rows and appends new ones.
    * Orchestrates the transformation and persistence of dirty records.
    */
-  _commitUpdate(newData) {
+  _persistUpdate(newData) {
     // 1. Snapshot the NEW data
     const { rowsToUpdate, rowsToAdd } = this._identifyChanges(newData);
 

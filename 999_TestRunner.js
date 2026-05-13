@@ -199,3 +199,61 @@ function _writeToNewTestSheet(ss, name, matrix) {
   sheet.getRange(1, 1, matrix.length, matrix[0].length).setValues(matrix);
   return sheet;
 }
+
+/**
+ * gitCode_Redesign - Formula Porting Validation
+ * Tests the new 'merge' and 'truth' functions using a UnionTable driver.
+ */
+function test_FormulaPorting() {
+  initialize();
+  myLog("info", "Starting Formula Porting Test...");
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    
+    // 1. Setup a Virtual Union Driver
+    // In production, this would be defined in your 'NewAccounts_Sheets' file
+    const unionProps = {
+      Sources: "Ledgers_Bank, Ledgers_Cash", // Example sources
+      SheetType: "UnionTable"
+    };
+    const driver = new UnionTable(ss, "Test_Union_Driver", unionProps);
+    
+    // 2. Setup the Import Table with the new formulas
+    const importProps = {
+      SourceSheet: "Test_Union_Driver",
+      ImportMethod: "replace"
+    };
+    
+    // Inject test formulas into the registry mock (for testing)
+    // In production, these would be in your 'NewAccounts_NewFormulas' sheet
+    // Example: [Amount] = merge(Ledgers_Bank, Ledgers_Cash)
+    // Example: [IsCleared] = truth([Group])
+    // Example (Chained Lookup):
+    // [GroupID] = lookup(AnnualSummaries_Groups, PK, Group, [PK])
+    // [YearID]  = lookup(AnnualSummaries_Groups, Group, FY, calc.GroupID)
+    // Example (PK Generation):
+    // [NewPK]   = pk(getKeyPrefix(), [DatePaid], [TransactionID])
+    // Example (Nested Hash PK):
+    // [HashPK]  = pk(getKeyPrefix(), [DatePaid], hash([Reference], [Amount], [Balance]))
+    
+    const importer = new ImportTable(ss, "Test_Ported_Result", importProps);
+    
+    myLog("info", "DRIVER: Created UnionTable from %s. Total Rows: %d", 
+      unionProps.Sources, driver.getWindow().length);
+
+    // 3. Run Transformation
+    const result = importer.transform();
+    
+    if (result && result.length > 0) {
+      _writeToNewTestSheet(ss, "TEST_Ported_Result", result);
+      myLog("info", "Test Complete: Check 'TEST_Ported_Result' for vertical merge and boolean truth values.");
+    } else {
+      myLog("warn", "Test yielded no results. Ensure 'Ledgers_Bank' and 'Ledgers_Cash' have data.");
+    }
+    
+  } catch (e) {
+    myLog("error", "Formula Porting Test Failed: %s", e.message);
+    if (e.stack) myLog("error", "Stack: %s", e.stack);
+  }
+}

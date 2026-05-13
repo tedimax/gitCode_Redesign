@@ -65,12 +65,32 @@ const Utils = (() => {
     throw new Error(`No SourceSheet defined in properties for table "${tableInstance.longName}". Virtual mapping requires an explicit driver sheet.`);
   };
 
+  /**
+   * Cleans a string to meet Google Sheets stricter Named Range rules:
+   * - Only letters, numbers, underscores.
+   * - Must not start with a number.
+   * - Must not be "true" or "false".
+   * - Must not match A1 or R1C1 reference styles.
+   */
+  const cleanNameForRange = (name) => {
+    if (!name) return "Unknown";
+    let cleaned = String(name).replace(/[^a-zA-Z0-9_]/g, "");
+    if (/^[0-9]/.test(cleaned)) cleaned = "_" + cleaned;
+    if (/^(true|false)$/i.test(cleaned)) cleaned = cleaned + "_";
+    if (/^[A-Za-z]+[0-9]+$/.test(cleaned) || /^R[0-9]+C[0-9]+$/i.test(cleaned)) {
+      cleaned = cleaned + "_";
+    }
+    return cleaned;
+  };
+
   return {
     getSpreadsheetInstance,
     getSheetInstance,
-    getSourceSheet
+    getSourceSheet,
+    cleanNameForRange
   };
 })();
+
 
 // Assign to global scope for easier access
 const getSheetInstance = Utils.getSheetInstance;

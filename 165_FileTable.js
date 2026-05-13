@@ -28,9 +28,7 @@ class FileTable extends UpdateTable {
     const latestFile = this._getLatestFile(folderId, driveMimeType);
 
     if (!latestFile) {
-      myLog("warn", "FileTable %s: No files found in Folder %s of type %s", this.longName, folderId, driveMimeType);
-      this._setWindowData([]);
-      return;
+      throw new Error(`CRITICAL: FileTable ${this.longName} failed to find any files in Folder ${folderId} of type ${driveMimeType}.`);
     }
 
     const parsedMatrix = this._parseFileContent(latestFile, driveMimeType);

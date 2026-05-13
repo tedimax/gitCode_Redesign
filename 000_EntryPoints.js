@@ -6,6 +6,37 @@
  */
 
 /**
+ * Trigger: Runs when the spreadsheet is opened.
+ * Builds the custom "Village Hall" menu with submenus.
+ */
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('Village Hall')
+    .addSubMenu(ui.createMenu('Current Sheet')
+      .addItem('🚀 Run Annual Report', 'runActiveAnnualSheet')
+      .addItem('📥 Import Data', 'importActiveSheet')
+      .addItem('🏷️ Set Named Ranges', 'defineActiveSheetNamedRanges'))
+    .addSeparator()
+    .addSubMenu(ui.createMenu('Batch Operations')
+      .addItem('🔄 Run All Years (2016-2027)', 'runAllAnnualReports'))
+    .addSeparator()
+    .addSubMenu(ui.createMenu('Single Year Run')
+      .addItem('📅 2016', 'runYear2016')
+      .addItem('📅 2017', 'runYear2017')
+      .addItem('📅 2018', 'runYear2018')
+      .addItem('📅 2019', 'runYear2019')
+      .addItem('📅 2020', 'runYear2020')
+      .addItem('📅 2021', 'runYear2021')
+      .addItem('📅 2022', 'runYear2022')
+      .addItem('📅 2023', 'runYear2023')
+      .addItem('📅 2024', 'runYear2024')
+      .addItem('📅 2025', 'runYear2025')
+      .addItem('📅 2026', 'runYear2026')
+      .addItem('📅 2027', 'runYear2027'))
+    .addToUi();
+}
+
+/**
  * Entry Point: Runs the report for the current active sheet.
  * Checks if the active sheet belongs to an annual report context.
  */
@@ -23,6 +54,64 @@ function runActiveAnnualSheet() {
   const year = Number(yearMatch[0]);
   myLog("info", "Entry Point: running active annual sheet for year %d", year);
   _runAnnualReportForYear(year); 
+}
+
+/**
+ * Entry Point: Imports data for the current active sheet.
+ * Interacts only with Registry and Table instances.
+ */
+function importActiveSheet() {
+  initialize();
+  const activeSheet = SpreadsheetApp.getActiveSheet();
+  const sheetName = activeSheet.getName();
+  
+  myLog("info", "Importing data for active sheet: %s", sheetName);
+  
+  try {
+    const config = Registry.getSheetConfigBySheetName(sheetName);
+    if (!config) {
+      throw new Error(`Sheet '${sheetName}' not found in the Registry. Cannot import data for untracked sheets.`);
+    }
+    
+    const table = Utils.getSheetInstance(config.LongName);
+    if (table && typeof table.prepare === 'function') {
+      table.prepare();
+      myLog("info", "Finished preparing data for %s", sheetName);
+    } else {
+      myLog("warn", "Sheet %s does not support direct import.", sheetName);
+    }
+  } catch (e) {
+    myLog("error", "Failed to import data: %s", e.message);
+    if (e.stack) myLog("error", "Stack: %s", e.stack);
+  }
+}
+
+/**
+ * Entry Point: Defines Named Ranges for the current active sheet.
+ * Interacts only with Registry and Table instances.
+ */
+function defineActiveSheetNamedRanges() {
+  initialize();
+  const activeSheet = SpreadsheetApp.getActiveSheet();
+  const sheetName = activeSheet.getName();
+  
+  myLog("info", "Defining Named Ranges for active sheet: %s", sheetName);
+  
+  try {
+    const config = Registry.getSheetConfigBySheetName(sheetName);
+    if (!config) {
+      throw new Error(`Sheet '${sheetName}' not found in the Registry. Cannot generate named ranges for untracked sheets.`);
+    }
+    
+    const table = Utils.getSheetInstance(config.LongName);
+    if (table) {
+      table.writeNamedRanges();
+      myLog("info", "Finished defining ranges for %s", sheetName);
+    }
+  } catch (e) {
+    myLog("error", "Failed to define ranges: %s", e.message);
+    if (e.stack) myLog("error", "Stack: %s", e.stack);
+  }
 }
 
 /**
@@ -102,7 +191,7 @@ function _runAnnualReportForYear(year, forceSourceFirstRow = null) {
 
   // 4. Instantiate and Run
   const engine = new AnnualSheet(ss, longName, props);
-  engine.runSync();
+  engine.execute();
   
   myLog("info", "Annual Report for %d complete.", year);
 }

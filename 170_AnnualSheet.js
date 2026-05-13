@@ -37,7 +37,7 @@ class AnnualSheet extends UpdateTable {
   /**
    * Orchestration: Generates a 2D matrix for a specific year.
    */
-  importData(yearArg) {
+  prepare(yearArg) {
     const targetYear = yearArg || this._config.year || this.sheetName.split("_")[0];
     myLog("info", "AnnualSheet: Orchestrating report for %s", targetYear);
 
@@ -91,8 +91,7 @@ class AnnualSheet extends UpdateTable {
 
     const targetSheet = sheetNameOverride ? this.ss.getSheetByName(sheetNameOverride) : this.sheet;
     if (!targetSheet) {
-      myLog("warn", "AnnualSheet: Styling target sheet '%s' not found. Skipping styling.", sheetNameOverride || this.sheetName);
-      return;
+      throw new Error(`AnnualSheet Rendering Error: Target sheet '${sheetNameOverride || this.sheetName}' not found. Cannot apply styles.`);
     }
 
     targetSheet.clear();
