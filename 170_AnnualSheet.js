@@ -25,7 +25,34 @@ class AnnualSheet extends UpdateTable {
     this.ledger = new AnnualLedger(sourceTable, namesTable);
     this.reporter = new AnnualReporter();
     this.renderer = new AnnualRenderer(this.STYLE_MAP);
+
+    this._targetYear = properties.year || null;
   }
+
+  /**
+   * Fluent API: Sets the target year for the report.
+   */
+  forYear(year) {
+    this._targetYear = year;
+    return this;
+  }
+
+  /**
+   * Fluent API: Overrides the first data row of the source ledger.
+   */
+  withSourceRow(row) {
+    this.ledger.sourceTable.firstDataRowIndex = Number(row);
+    return this;
+  }
+
+  /**
+   * Fluent API: Forces a full scan of the source data.
+   */
+  withFullLoad(isFull = true) {
+    this._config.FullLoad = isFull;
+    return this;
+  }
+
 
   /**
    * Orchestration: Clears caches and forces a full data reload.
@@ -38,7 +65,7 @@ class AnnualSheet extends UpdateTable {
    * Orchestration: Generates a 2D matrix for a specific year.
    */
   prepare(yearArg) {
-    const targetYear = yearArg || this._config.year || this.sheetName.split("_")[0];
+    const targetYear = yearArg || this._targetYear || this._config.year || this.sheetName.split("_")[0];
     myLog("info", "AnnualSheet: Orchestrating report for %s", targetYear);
 
     // 1. Load Facts (Strategy: Configurable Load)

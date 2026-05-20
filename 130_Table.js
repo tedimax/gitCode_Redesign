@@ -9,18 +9,67 @@ class Table extends Sheet {
   constructor(ss, longName, properties = null) {
     super(ss, longName, properties);
     // Semi-private logic stores
-    this._properties = this._config;
+    let registryProps = {};
+    if (typeof Registry !== 'undefined') {
+      try {
+        registryProps = Registry.getSheetConfig(longName);
+      } catch (e) {
+        // Hard fail at Level 2 if no properties provided and not bootstrapping
+        if (!properties && longName !== CONFIG_CONSTANTS.SHEETS_CONFIG_NAME) {
+          throw e;
+        }
+      }
+    }
+    const rawProps = Object.assign({}, registryProps, properties || {});
+    
+    this._properties = {};
+    if (rawProps) {
+      for (const key in rawProps) {
+        this._properties[key.toLowerCase().trim()] = rawProps[key];
+      }
+    }
+    
     this._columnMap = new Map();
     this._hashKeyMap = new Map();
     this._isHashed = false;
     this._keyMetadata = null;
     this._labels = null;
+    this._modeOverride = null; // Internal override for Fluent API
+    this._isInMemory = false;  // If true, persist() will not write to the sheet
+    this._buffer = [];         // Stores results for in-memory runs
     this._validStartRow = null; // Physical row index of the first validated row
     this._validEndRow = null;   // Physical row index of the last validated row
+    this._skipValidation = false; // Internal flag for fast lookups
     
     // Initialize headers automatically upon creation
     this.initializeHeaderMap();
   }
+
+  /**
+   * Fluent API: Forces 'update' mode for this specific instance.
+   * @returns {Table}
+   */
+  withUpdateMode() {
+    this._modeOverride = "update";
+    return this;
+  }
+
+  /**
+   * Fluent API: Prevents physical writes to the sheet.
+   * @returns {Table}
+   */
+  asInMemory() {
+    this._isInMemory = true;
+    return this;
+  }
+
+  /**
+   * Returns the data generated during an in-memory execution.
+   */
+  getBuffer() {
+    return this._buffer;
+  }
+
 
   // =========================================================================
   // FOUNDATIONAL METHODS (CONSTRUCTOR HELPERS)
@@ -31,10 +80,11 @@ class Table extends Sheet {
    * Stores both the ordered array and the lookup map for O(1) retrieval.
    */
   initializeHeaderMap() {
-    const labelRow = this.getProperty("LabelRow") || 1;
+    const labelRow = this.getProperty("LabelRow");
     
-    // 1. Capture and trim labels in their physical order
-    this._labels = this._fetchHeaderRow(labelRow).map(label => String(label || "").trim());
+    // 1. Capture and trim labels in their physical order (Skip if LabelRow is 0)
+    const rawLabels = (labelRow === 0) ? [] : this._fetchHeaderRow(labelRow || 1);
+    this._labels = rawLabels.map(label => String(label || "").trim());
     
     // 2. Build the lookup map functionally (Label -> Offset)
     this._columnMap = new Map(
@@ -42,6 +92,24 @@ class Table extends Sheet {
         .map((label, offset) => [label, offset])
         .filter(([label]) => label !== "")
     );
+    
+    // 3. Fallback: If no labels found, try symbolic map from constants
+    if (this._columnMap.size === 0) {
+      const symbolicMap = TABLE_COLUMN_MAP[this.longName];
+      if (symbolicMap) {
+        myLog("trace", "Table %s: Using symbolic mapping from constants.", this.longName);
+        for (const symbol in symbolicMap) {
+          const literalHeader = symbolicMap[symbol];
+          if (!this._columnMap.has(literalHeader)) {
+             this._columnMap.set(literalHeader, Object.keys(symbolicMap).indexOf(symbol));
+          }
+        }
+      } else if (labelRow !== 0) {
+        myLog("warn", "Table %s: No physical or symbolic headers found.", this.longName);
+      } else {
+        myLog("trace", "Table %s: Confirmed as Raw/Output sheet (LabelRow=0).", this.longName);
+      }
+    }
     
     myLog("trace", "Initialized columnMap for %s with %d labels", this.longName, this._columnMap.size);
   }
@@ -54,9 +122,23 @@ class Table extends Sheet {
    * Safe access to table constants from the Sheets config.
    * Uses standardized O(1) lookup.
    */
-  getProperty(columnName) {
-    const val = this._properties[columnName.toLowerCase().trim()];
-    return val !== undefined ? val : null;
+  getProperty(propName) {
+    const key = String(propName || "").toLowerCase().trim();
+    const val = this._properties[key];
+    
+    if (key === "keyprefix") {
+       myLog("trace", "Table [%s]: getProperty('%s') -> '%s' (Available: [%s])", 
+         this.longName, key, val, Object.keys(this._properties).join(", "));
+    }
+
+    if (val !== undefined && val !== null && val !== "") return val;
+
+    // Fallback to Registry global lookup (RECURSION GUARD)
+    // The Registry's own configuration table cannot look itself up via the Registry.
+    if (this.longName !== CONFIG_CONSTANTS.SHEETS_CONFIG_NAME && typeof Registry !== 'undefined') {
+      return Registry.lookupValue(this.longName, propName);
+    }
+    return null;
   }
 
   /**
@@ -67,11 +149,30 @@ class Table extends Sheet {
   }
 
   /**
+   * Fluent setter to disable row validation for high-volume lookup tables.
+   */
+  withoutValidation() {
+    this._skipValidation = true;
+    return this;
+  }
+
+  /**
    * O(1) Column Index Resolver
    */
   getColOffset(name) {
-    const off = this._columnMap.get(name);
-    return off !== undefined ? off : -1;
+    if (!name) return -1;
+    const searchName = String(name).toLowerCase().trim();
+    
+    // 1. Try exact match (Fast)
+    let off = this._columnMap.get(name);
+    if (off !== undefined) return off;
+    
+    // 2. Try case-insensitive match (Fallback)
+    for (const [label, offset] of this._columnMap.entries()) {
+      if (label.toLowerCase() === searchName) return offset;
+    }
+    
+    return -1;
   }
 
   /**
@@ -159,6 +260,8 @@ class Table extends Sheet {
       const labels = this.getLabels();
       const fieldTypes = labels.map(label => TypeUtils.getType(this.longName, label));
       const clearedOff = this.getColOffset("Cleared");
+      const groupOff = this.getColOffset("Group");
+      const entryTypeOff = this.getColOffset("EntryType");
 
       // Resolve which physical range needs validation
       const winEndRow = this._windowStartRow + this.windowDataLength - 1;
@@ -168,15 +271,27 @@ class Table extends Sheet {
       const validateEnd = this._validEndRow ? Math.max(winEndRow, this._validEndRow) : winEndRow;
 
       for (let pRow = validateStart; pRow <= validateEnd; pRow++) {
-        // Skip if already validated
+        // Skip if already validated OR if global bypass is active
+        if (this._skipValidation) continue;
         if (this._validStartRow && this._validEndRow && pRow >= this._validStartRow && pRow <= this._validEndRow) continue;
 
         const rowOff = pRow - this._windowStartRow;
         const row = this._window[rowOff];
-        const keyValue = this.getRowKey(row) || "Unknown";
+        const keyValue = this.getRowKey(row);
         
-        const rawCleared = clearedOff !== -1 ? row[clearedOff] : true;
-        const isCleared = (rawCleared === true || String(rawCleared).toUpperCase() === "TRUE");
+        // If the row has no key, it is a comment or spacer row. Bypass validation entirely.
+        if (keyValue === null || keyValue === "") continue;
+        
+        let isCleared = true;
+        let rawCleared = "true";
+        if (clearedOff !== -1) {
+          rawCleared = row[clearedOff];
+          isCleared = (rawCleared === true || String(rawCleared).toUpperCase() === "TRUE");
+        } else if (groupOff !== -1) {
+          const rawGroup = row[groupOff];
+          isCleared = (rawGroup !== undefined && rawGroup !== null && String(rawGroup).trim() !== "" && String(rawGroup).trim() !== "0");
+          rawCleared = isCleared ? "true" : "false";
+        }
 
         this._window[rowOff] = row.map((cell, colOff) => {
           const type = fieldTypes[colOff];
@@ -184,11 +299,35 @@ class Table extends Sheet {
           const context = { row: pRow, col: label, sheet: this.longName };
           const val = TypeUtils.castType(cell, type);
           TypeUtils.validate(val, type, context);
-          let isMandatory = CONFIG_CONSTANTS.MANDATORY_TABLE_FIELDS.includes(label);
-          if (!isCleared) isMandatory = false;
+          
+           // Only enforce mandatory fields for data tables, skip for system configuration sheets
+          const isConfigSheet = [
+            CONFIG_CONSTANTS.SHEETS_CONFIG_NAME,
+            CONFIG_CONSTANTS.DATATYPES_SHEET_NAME,
+            CONFIG_CONSTANTS.FORMULAS_SHEET_NAME,
+            CONFIG_CONSTANTS.CORRECTIONS_SHEET_NAME,
+            "NewAccounts_TestSheetDest"
+          ].includes(this.longName);
+
+          let isMandatory = !isConfigSheet && (CONFIG_CONSTANTS.MANDATORY_TABLE_FIELDS || []).includes(label);
+          const entryType = entryTypeOff !== -1 ? String(row[entryTypeOff] || "").trim().toUpperCase() : "ACTIVITY";
+
+          // Rule 1: Group is only mandatory once the row is Cleared
+          if (label === "Group" && !isCleared) isMandatory = false;
+
+          // Rule 2: Category is only mandatory for Activity rows (regardless of cleared status)
+          if (label === "Category" && entryType !== "ACTIVITY") isMandatory = false;
+
+          // Rule 3: FY is mandatory for all Account balance snapshots, but for anything else (Activity, etc), it's only mandatory if Cleared
+          if (label === "FY") {
+             if (entryType !== "ACCOUNT" && !isCleared) isMandatory = false;
+          }
+
+          // Note: Core fields (PK, Amount, Account) remain mandatory regardless of state.
 
           if (isMandatory && (val === "" || val === null || val === undefined)) {
-            throw new Error(`Validation Error: Mandatory field "${label}" is empty at row ${pRow} [Key: ${keyValue}].`);
+            const stateInfo = `[Type: ${entryType}, Cleared: ${isCleared} (raw: "${rawCleared}")]`;
+            throw new Error(`Validation Error ${stateInfo}: Mandatory field "${label}" is empty at row ${pRow} [Key: ${keyValue}].`);
           }
           
           if (isMandatory && label === "Group" && Number(val) === 0) {
@@ -231,7 +370,7 @@ class Table extends Sheet {
    * Internal helper to resolve key column metadata once.
    */
   _initializeKeyMetadata() {
-    if (this._keyMetadata) return;
+    if (this._keyMetadata) return this._keyMetadata;
 
     const targetKeyField = this.getProperty("Key");
     const keyFieldsRaw = this.getProperty("KeyFields");
@@ -275,6 +414,7 @@ class Table extends Sheet {
         const available = Object.keys(this._properties).join(", ");
         throw new Error(`CRITICAL: Table ${this.longName} has no 'Key' or 'KeyFields' configured in the registry. Available properties: [${available}]. Check your spreadsheet column headers.`);
     }
+    return this._keyMetadata;
   }
 
   /**
@@ -285,7 +425,7 @@ class Table extends Sheet {
   getRowKey(row, pRow = null) {
     try {
       if (!this._keyMetadata) this._initializeKeyMetadata();
-
+      
       if (this._keyMetadata.type === "single") {
         const rawVal = row[this._keyMetadata.offset];
         if (rawVal === undefined || rawVal === "") return null;
@@ -294,10 +434,17 @@ class Table extends Sheet {
         return val === null ? null : String(val).trim();
       } else {
         if (this._keyMetadata.fields.length === 0) return null;
+        let allEmpty = true;
         const compositeValue = this._keyMetadata.fields.map(fieldMeta => {
-          const val = TypeUtils.castType(row[fieldMeta.offset], fieldMeta.type);
-          return String(val || "");
+          const rawCell = row[fieldMeta.offset];
+          if (rawCell !== undefined && rawCell !== null && String(rawCell).trim() !== "") {
+            allEmpty = false;
+          }
+          const val = TypeUtils.castType(rawCell, fieldMeta.type);
+          return String(val || "").trim().toLowerCase();
         }).join("|");
+        
+        if (allEmpty) return null;
         return CryptoUtils.generateHash(compositeValue);
       }
     } catch (e) {
@@ -309,10 +456,49 @@ class Table extends Sheet {
     this._hashKeyMap.clear();
     this._isHashed = true;
 
+    // --- FULL SCAN FOR KEYS ---
+    // If this is an UpdateTable, we MUST know all existing keys to prevent duplicates,
+    // even if they fall outside the current 'FirstRow' window.
+    if (this.sheet && (this instanceof UpdateTable || this.getProperty("importmethod"))) {
+      const lastRow = this.sheet.getLastRow();
+      if (lastRow >= this.firstDataRowIndex) {
+        this._initializeKeyMetadata();
+        const keyMetadata = this._keyMetadata;
+        
+        // Optimize: If it's a single column key, fetch only that column
+        if (keyMetadata.type === "single") {
+          const keyCol = keyMetadata.offset + 1;
+          const values = this.sheet.getRange(this.firstDataRowIndex, keyCol, lastRow - this.firstDataRowIndex + 1, 1).getValues();
+          values.forEach((valArr, index) => {
+            const rawVal = valArr[0];
+            if (rawVal !== undefined && rawVal !== "") {
+              const key = String(TypeUtils.castType(rawVal, keyMetadata.fieldType) || "").trim().toLowerCase();
+              if (key) this._hashKeyMap.set(key, index);
+            }
+          });
+          myLog("trace", "Table %s: Hashed %d keys from full-sheet scan (Col %d).", this.longName, this._hashKeyMap.size, keyCol);
+          return;
+        } else {
+          // Composite Keys: Fetch only the necessary columns for the full sheet
+          const lastCol = this.sheet.getLastColumn();
+          const numRows = lastRow - this.firstDataRowIndex + 1;
+          const fullData = this.sheet.getRange(this.firstDataRowIndex, 1, numRows, lastCol).getValues();
+          
+          fullData.forEach((row, index) => {
+            const key = this.getRowKey(row);
+            if (key) this._hashKeyMap.set(key, index);
+          });
+          myLog("trace", "Table %s: Hashed %d keys from full-sheet scan (Composite).", this.longName, this._hashKeyMap.size);
+          return;
+        }
+      }
+    }
+
+    // Fallback: Hash only the current window
     this.getWindow().forEach((row, index) => {
       const key = this.getRowKey(row);
       if (key) {
-        this._hashKeyMap.set(String(key).trim(), index);
+        this._hashKeyMap.set(String(key).trim().toLowerCase(), index);
       }
     });
   }
@@ -329,7 +515,7 @@ class Table extends Sheet {
   }
 
   getRowOffset(key) {
-    return this.getHashKeyMap().get(String(key).trim());
+    return this.getHashKeyMap().get(String(key).trim().toLowerCase());
   }
 
   /**
@@ -351,13 +537,13 @@ class Table extends Sheet {
       const lookupMap = new Map();
       this._window.forEach(row => {
         const k = row[keyOffset];
-        if (k !== undefined && k !== "") lookupMap.set(String(k), row[valOffset]);
+        if (k !== undefined && k !== "") lookupMap.set(String(k).toLowerCase(), row[valOffset]);
       });
       this._lookupCacheMap.set(cacheKey, lookupMap);
       myLog("trace", "Built lookup cache for %s (%s->%s)", this.longName, keyCol, valCol);
     }
     
-    return this._lookupCacheMap.get(cacheKey).get(String(searchVal)) || "";
+    return this._lookupCacheMap.get(cacheKey).get(String(searchVal).toLowerCase()) || "";
   }
   
   /**
@@ -397,6 +583,50 @@ class Table extends Sheet {
     myLog("info", "Successfully wrote Named Ranges for %s", this.longName);
   }
 
+
+  /**
+   * Scans the physical sheet to find the first row that matches or follows the target date.
+   * Useful for setting the ingestion window for a specific Financial Year.
+   * @param {Date} targetDate
+   * @param {string} dateLabel - The name of the column to scan (defaults to 'Date')
+   * @returns {number} The physical row index.
+   */
+  calculateFirstRowByDate(targetDate, dateLabel = "Date") {
+    if (!this.sheet) return this.firstDataRowIndex;
+    
+    const dateCol = this.getColOffset(dateLabel);
+
+    if (dateCol === -1) {
+      myLog("warn", "Table %s: Cannot calculate FirstRow by date. Column '%s' not found.", this.longName, dateLabel);
+      return this.firstDataRowIndex;
+    }
+
+    // Fetch only the date column for efficiency
+    const lastRow = this.sheet.getLastRow();
+    
+    let labelRow = Number(this.getProperty("LabelRow"));
+    if (isNaN(labelRow) || labelRow === undefined || labelRow === null) {
+      labelRow = 1;
+    }
+    const searchStartRow = labelRow + 1; // Always scan from the top of the data
+    
+    if (lastRow < searchStartRow) return searchStartRow;
+
+    const dateValues = this.sheet.getRange(searchStartRow, dateCol + 1, lastRow - searchStartRow + 1, 1).getValues();
+    const targetTime = targetDate.getTime();
+    
+    for (let i = 0; i < dateValues.length; i++) {
+      const cellValue = dateValues[i][0];
+      const cellDate = cellValue instanceof Date ? cellValue : new Date(cellValue);
+      
+      if (!isNaN(cellDate.getTime())) {
+        if (cellDate.getTime() >= targetTime) {
+          return i + searchStartRow;
+        }
+      }
+    }
+    return lastRow; // Default to end if no future dates found
+  }
 }
 
 // Register with globals

@@ -9,7 +9,19 @@ class Sheet {
   constructor(ss, longName, config = null) {
     // Semi-private fields for data isolation
     this._window = [];
-    const registryConfig = (typeof Registry !== 'undefined') ? Registry.getSheetConfig(longName) : {};
+    
+    // 1. Resolve Hybrid Config (Registry + Overrides)
+    let registryConfig = {};
+    if (typeof Registry !== 'undefined') {
+      try {
+        registryConfig = Registry.getSheetConfig(longName);
+      } catch (e) {
+        // Only throw if NO config was passed and it's not the bootstrap table
+        if (!config && longName !== CONFIG_CONSTANTS.SHEETS_CONFIG_NAME) {
+          throw e;
+        }
+      }
+    }
     const rawConfig = Object.assign({}, registryConfig, config || {});
     
     // Standardize: Lowercase and Trim all property keys for O(1) lookup
@@ -28,14 +40,17 @@ class Sheet {
     this.sheetName = this._config.sheetname || sheetContext;
     this.sheet = ss.getSheetByName(this.sheetName);
     
-    const isVirtual = this._config.sheettype === 'FileTable' || this._config.sheettype === 'InMemoryTable';
+    const isVirtual = this._config.sheettype === 'FileTable' 
+                   || this._config.sheettype === 'InMemoryTable'
+                   || this._config.sheettype === 'UnionTable';
     if (!this.sheet && !isVirtual) {
       if (this._config.createifmissing) {
         myLog("info", "Sheet: '%s' not found. Creating new sheet in spreadsheet %s.", this.sheetName, ss.getId());
         this.sheet = ss.insertSheet(this.sheetName);
       } else {
         const ssid = ss.getId();
-        throw new Error(`Registry Failure: Sheet "${this.sheetName}" not found. Expected in Spreadsheet ID: "${ssid}". Please check your Sheets configuration.`);
+        throw new Error(`Physical Sheet Missing: The physical Google Sheet named "${this.sheetName}" was not found inside the spreadsheet (ID: "${ssid}").\n\n` +
+          `👉 Action Required: Please verify that a sheet tab named "${this.sheetName}" exists in the target spreadsheet, or set 'CreateIfMissing' to TRUE in your 'NewAccounts_Sheets' Registry configuration.`);
       }
     }
 
@@ -56,6 +71,17 @@ class Sheet {
   getWindow() {
     this.fetch();
     return this._window;
+  }
+
+  /**
+   * Clears the internal data window cache, forcing a fresh fetch on next access.
+   */
+  clearCache() {
+    this._window = [];
+    this._windowStartRow = null;
+    this.windowDataLength = 0;
+    this._isFetched = false;
+    myLog("trace", "Sheet %s: Cache cleared.", this.longName);
   }
 
   /**
@@ -104,9 +130,9 @@ class Sheet {
    * @param {number} [startRow] Physical row to start from (default: firstDataRowIndex)
    * @param {number} [numRows] Number of rows to fetch (default: everything to bottom)
    */
-  fetch(startRow = null, numRows = null) {
+  fetch(startRow, numRows) {
     try {
-      const isDefaultRequest = (startRow === null && numRows === null);
+      const isDefaultRequest = (startRow === undefined || startRow === null) && (numRows === undefined || numRows === null);
 
       // 1. Lazy Guard (Skip if we already have the default full fetch window)
       if (isDefaultRequest && this._isFetched) return;
@@ -142,12 +168,19 @@ class Sheet {
   /**
    * Private Helper: Resolves the requested physical range into a range object.
    */
-  _resolveRequestedRange(startRow = this.firstDataRowIndex, numRows = null) {
-    const lastRow = this.sheet.getLastRow();
+  _resolveRequestedRange(startRow, numRows) {
+    const resolvedStart = (startRow === undefined || startRow === null) ? this.firstDataRowIndex : startRow;
+    const physicalLastRow = this.sheet.getLastRow();
+    const maxRows = this.sheet.getMaxRows();
+    const registryLastRow = Number(this._config.lastrow) || 0;
     const lastCol = this.sheet.getLastColumn();
+    const ssUrl = this.ss.getUrl();
     
-    const count = numRows ?? Math.max(0, lastRow - startRow + 1);
-    return { start: startRow, numRows: count, lastCol: lastCol };
+    myLog("trace", "Sheet [%s] Dimension Audit: startRow=%d, physicalLastRow=%d, maxRows=%d, ssUrl=%s", 
+      this.longName, resolvedStart, physicalLastRow, maxRows, ssUrl);
+    
+    const count = (numRows === undefined || numRows === null) ? Math.max(0, physicalLastRow - resolvedStart + 1) : numRows;
+    return { start: resolvedStart, numRows: count, lastCol: lastCol };
   }
 
   /**
@@ -250,10 +283,12 @@ class Sheet {
   /**
    * Fetches the raw header row from the sheet.
    */
-  _fetchHeaderRow(labelRow = 1) {
-    if (!this.sheet) return [];
+  _fetchHeaderRow(labelRow) {
+    if (!this.sheet || !labelRow || labelRow < 1) return [];
     try {
-      const labels = this.sheet.getRange(labelRow, 1, 1, this.sheet.getLastColumn()).getValues()[0];
+      const lastCol = this.sheet.getLastColumn();
+      if (lastCol === 0) return []; // Empty sheet
+      const labels = this.sheet.getRange(labelRow, 1, 1, lastCol).getValues()[0];
       return labels;
     } catch (e) {
       throw new Error(`[Physical Layer: ${this.longName}] Failed to fetch labels for sheet ${this.sheetName}. It may not exist. Details: ${e.message}`);
@@ -291,7 +326,6 @@ class Sheet {
     if (!matrix || matrix.length === 0 || !matrix[0] || matrix[0].length === 0) return;
     myLog("info", "Writing " + matrix.length + " rows to " + this.sheetName + " starting at row " + startRow);
     const range = this.sheet.getRange(startRow, 1, matrix.length, matrix[0].length);
-    range.clearFormat(); // Reset any 'Plain Text' formatting to ensure formulas evaluate
     range.setValues(matrix);
 
     // Update internal tracker if this exceeds it
@@ -333,7 +367,7 @@ class Sheet {
    */
   writeNamedRanges() {
     const labels = this.sheet.getRange(this._config.labelrow || 1, 1, 1, this.sheet.getLastColumn()).getValues()[0];
-    const sheetNameClean = StringUtils.toRangeName(this.longName);
+    const sheetNameClean = StringUtils.toRangeName(this.sheetName);
     
     const physicalDataLength = Math.max(1, this.getLastRowIndex() - this.firstDataRowIndex + 1);
 

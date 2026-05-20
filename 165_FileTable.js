@@ -8,7 +8,27 @@
 class FileTable extends UpdateTable {
   constructor(ss, longName, properties = {}) {
     super(ss, longName, properties);
+    this._fileIdOverride = null;
   }
+
+  /**
+   * Fluent API: Overrides the target file ID for this import run.
+   */
+  withFileId(id) {
+    this._fileIdOverride = id;
+    return this;
+  }
+
+  /**
+   * Overrides Table.prepare
+   * For FileTable, preparing simply means fetching the Drive data.
+   */
+  prepare() {
+    this.fetchWindow();
+    return this._window;
+  }
+
+
 
   /**
    * Overrides Sheet.fetchWindow
@@ -19,13 +39,19 @@ class FileTable extends UpdateTable {
     if (this._isFetched) return;
     myLog("info", "FileTable %s: Fetching raw data from Drive...", this.longName);
     
-    const folderId = this.getProperty("FolderID");
-    if (!folderId) {
-      throw new Error(`CRITICAL: FileTable ${this.longName} is missing a FolderID in the Registry.`);
-    }
-
     const driveMimeType = this._resolveMimeType(this.getProperty("MimeType"));
-    const latestFile = this._getLatestFile(folderId, driveMimeType);
+    
+    let latestFile;
+    if (this._fileIdOverride) {
+      latestFile = DriveApp.getFileById(this._fileIdOverride);
+      myLog("info", "FileTable %s: Using explicit File ID override -> %s", this.longName, this._fileIdOverride);
+    } else {
+      const folderId = this.getProperty("FolderID");
+      if (!folderId) {
+        throw new Error(`CRITICAL: FileTable ${this.longName} is missing a FolderID in the Registry.`);
+      }
+      latestFile = this._getLatestFile(folderId, driveMimeType);
+    }
 
     if (!latestFile) {
       throw new Error(`CRITICAL: FileTable ${this.longName} failed to find any files in Folder ${folderId} of type ${driveMimeType}.`);
@@ -35,20 +61,40 @@ class FileTable extends UpdateTable {
     this._setWindowData(parsedMatrix);
   }
 
-  /**
-   * Overrides UpdateTable.commit
-   * Safety override to prevent FileTables from ever physically writing back to Google Sheets.
-   */
-  commit() {
-    myLog("info", "FileTable %s: commit() suppressed. FileTable is a read-only source.", this.longName);
+
+  persist(newData, mode) {
+    if (this.ss) {
+      // 0. Ensure sheet is initialized
+      if (!this.sheet) this.sheet = this.ss.getSheetByName(this.sheetName);
+      if (!this.sheet) {
+        myLog("warn", "FileTable %s: Target sheet '%s' not found. Cannot write headers.", this.longName, this.sheetName);
+      } else if (this._detectedHeaders && this._detectedHeaders.length > 0) {
+        // 1. Physically write the headers to the sheet if we have them
+        const labelRowIdx = Number(this.getProperty("LabelRow")) || 1;
+        const matrix = [this._detectedHeaders];
+        myLog("info", "FileTable %s: Writing %d headers to row %d: [%s]", 
+          this.longName, this._detectedHeaders.length, labelRowIdx, this._detectedHeaders.slice(0, 5).join(", "));
+        this.sheet.getRange(labelRowIdx, 1, 1, this._detectedHeaders.length).setValues(matrix);
+        myLog("info", "FileTable %s: Physically wrote %d headers to row %d", this.longName, this._detectedHeaders.length, labelRowIdx);
+      }
+
+      // 2. Proceed with standard data persistence
+      return super.persist(newData, mode);
+    }
+    myLog("info", "FileTable %s: No physical sheet attached. persist() skipped.", this.longName);
     return { added: 0, updated: 0, removed: 0 };
   }
 
+
   /**
    * Safety Override for writeBlock.
+   * If a spreadsheet is attached (Staging mode), we allow the write.
    */
-  writeBlock(startRow, matrix) {
-    myLog("warn", "SAFETY: Blocked attempt to writeBlock to FileTable %s", this.longName);
+  writeBlock(matrix, startRow, startCol = 1) {
+    if (this.ss) {
+      return super.writeBlock(matrix, startRow, startCol);
+    }
+    myLog("warn", "SAFETY: Blocked attempt to writeBlock to virtual FileTable %s", this.longName);
   }
 
   // ==========================================
@@ -70,13 +116,22 @@ class FileTable extends UpdateTable {
   _getLatestFile(folderId, driveMimeType) {
     const sourceFolder = DriveApp.getFolderById(folderId);
     const filesIter = sourceFolder.getFilesByType(driveMimeType);
+    const nameFilter = this.getProperty("FilenameFilter");
     
     let latestFile = null;
     let latestDate = 0;
 
+    myLog("info", "FileTable %s: Searching for %s files in folder %s...", this.longName, driveMimeType, folderId);
+    
     while (filesIter.hasNext()) {
       const file = filesIter.next();
+      const name = file.getName();
       const date = file.getLastUpdated().getTime();
+      
+      myLog("trace", "  - Candidate: %s (Updated: %s)", name, new Date(date).toISOString());
+      
+      if (nameFilter && !name.includes(nameFilter)) continue;
+      
       if (date > latestDate) {
         latestDate = date;
         latestFile = file;
@@ -131,15 +186,35 @@ class FileTable extends UpdateTable {
   }
 
   _parseCsvBlobToMatrix(blob) {
-    myLog("info", "FileTable %s: Parsing CSV data...", this.longName);
-    const separator = this.getProperty("Separator") || ",";
-    const ccsid = this.getProperty("CCSID") || "UTF-8";
+    let separator = this.getProperty("Separator") || ",";
+    if (separator === "\\t") separator = "\t";
     
+    const ccsid = this.getProperty("CCSID") || "UTF-8";
     const dataStr = (ccsid === "UTF-8") ? blob.getDataAsString() : blob.getDataAsString(ccsid);
+
+    if (separator === "," && this.longName.includes("SQTX")) {
+       myLog("warn", "FileTable %s: WARNING: Parsing Square file with COMMA separator. Headers might not split correctly.", this.longName);
+    }
+
+    myLog("info", "FileTable %s: Parsing with separator CharCode(%d), Encoding: %s", 
+      this.longName, separator.charCodeAt(0), ccsid);
+
     return Utilities.parseCsv(dataStr, separator);
   }
 
   _setWindowData(parsedMatrix) {
+    if (parsedMatrix.length === 0) return;
+
+    // 1. Extract headers from Row 1 and sync the column map
+    this._detectedHeaders = parsedMatrix[0].map(h => String(h).trim());
+    this._labels = this._detectedHeaders;
+    myLog("info", "FileTable %s: Syncing columnMap with %d CSV headers: [%s]", this.longName, this._detectedHeaders.length, this._detectedHeaders.slice(0, 5).join(", "));
+    
+    this._columnMap = new Map(); 
+    this._detectedHeaders.forEach((h, i) => {
+      if (h) this._columnMap.set(h, i);
+    });
+
     const startIdx = Math.max(0, this.firstDataRowIndex - 1);
     this._window = parsedMatrix.length > startIdx ? parsedMatrix.slice(startIdx) : [];
     this.windowDataLength = this._window.length;

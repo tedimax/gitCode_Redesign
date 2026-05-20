@@ -10,7 +10,17 @@ class ImportTable extends UpdateTable {
     super(ss, longName, properties);
     this._compiledFormulaMap = new Map(); // TargetField -> Function
     this._rawFormulaMap = new Map();      // TargetField -> Original String (for dep analysis)
+    this._sourceOverride = null;          // Fluent API override
   }
+
+  /**
+   * Fluent API: Overrides the source sheet for this import run.
+   */
+  withSource(longName) {
+    this._sourceOverride = longName;
+    return this;
+  }
+
 
   /**
    * Overrides UpdateTable.prepare
@@ -32,32 +42,143 @@ class ImportTable extends UpdateTable {
 
     // Utils.getSourceSheet() handles fail-fast if missing.
     const sourceSheet = Utils.getSourceSheet(this);
-    myLog("info", "Driving Source for %s: %s (%d rows)", this.longName, sourceSheet.longName, sourceSheet.windowDataLength);
+    const sourceRows = sourceSheet.getWindow(); // Ensure data is fetched
+    myLog("info", "Driving Source for %s: %s (%d rows)", this.longName, sourceSheet.longName, sourceRows.length);
 
     // --- FAST PATH: Aligned Clone ---
     const fastClone = this._tryFastClone(sourceSheet);
-    if (fastClone.success) return fastClone.data;
+    if (fastClone.success) {
+      return fastClone.data;
+    }
 
     // --- STANDARD PATH: High-Level Pipeline ---
-    const context = FormulaUtils.createContext(sourceSheet);
+    const context = FormulaUtils.createContext(sourceSheet, this);
     myLog("info", "Starting transformation engine for %s...", this.longName);
+
+    // --- TARGET BOUNDARY DATE DEDUPLICATION GUARD ---
+    let targetBoundaryDate = null;
+    const dateFieldName = this.getProperty("DateField") || "Date";
+    const dateColOffset = this.getColOffset(dateFieldName);
+    if (this.longName !== "Ledgers_GeneratedTransactions" && dateColOffset !== -1) {
+      const prevRowIndex = this.firstDataRowIndex - 1;
+      const labelRowIdx = Number(this.getProperty("LabelRow")) || 1;
+      
+      let resolvedDateRaw = null;
+      if (this.sheet && prevRowIndex > labelRowIdx) {
+        resolvedDateRaw = this.sheet.getRange(prevRowIndex, dateColOffset + 1).getValue();
+        if (resolvedDateRaw) {
+          const parsed = resolvedDateRaw instanceof Date ? resolvedDateRaw : new Date(resolvedDateRaw);
+          if (!isNaN(parsed.getTime())) {
+            targetBoundaryDate = parsed;
+            myLog("info", "Target Window Date Boundary for %s: %s (preceding row %d date)", 
+              this.longName, targetBoundaryDate.toISOString().split('T')[0], prevRowIndex);
+          }
+        }
+      }
+      
+      // Fallback: If no preceding row, look at the first row of the current window
+      if (!targetBoundaryDate) {
+        const targetRows = this.getWindow();
+        if (targetRows.length > 0) {
+          const firstRowDateRaw = targetRows[0][dateColOffset];
+          if (firstRowDateRaw) {
+            const parsed = firstRowDateRaw instanceof Date ? firstRowDateRaw : new Date(firstRowDateRaw);
+            if (!isNaN(parsed.getTime())) {
+              targetBoundaryDate = parsed;
+              myLog("info", "Target Window Date Boundary for %s: %s (first row date fallback)", 
+                this.longName, targetBoundaryDate.toISOString().split('T')[0]);
+            }
+          }
+        }
+      }
+    }
 
     // 1. Build Hybrid Execution Plan
     const executionPlan = this._buildExecutionPlan(sourceSheet);
+    let excludedCount = 0;
 
-    // 2. Execute Phased Pipeline
+    // 2. Execute Phased Pipeline (Calculate -> Patch -> Filter)
     const targetObjects = sourceSheet.getWindow()
-      .map((sourceRow, rowOff) => ({
-        calc: this._calculateRow(sourceRow, rowOff, context, executionPlan, sourceSheet),
-        rowOff
-      }))
-      .filter(({ calc, rowOff }) => this._shouldKeepRow(calc, rowOff, context))
-      .map(({ calc }) => this._applyGlobalPatches(calc));
+      .map((sourceRow, rowOff) => {
+        const calc = this._calculateRow(sourceRow, rowOff, context, executionPlan, sourceSheet);
+        const patched = this._applyGlobalPatches(calc);
+        return { calc: patched, rowOff };
+      })
+      .filter(({ calc, rowOff }) => {
+        // A. Standard Registry filter (e.g. Cleared status, etc)
+        if (!this._shouldKeepRow(calc, rowOff, context)) return false;
 
-    // 3. Serialize results
+        // B. Target Boundary Date Exclusion Rule
+        if (targetBoundaryDate) {
+          const calcDateRaw = calc[dateFieldName];
+          if (calcDateRaw) {
+            const calcDate = calcDateRaw instanceof Date ? calcDateRaw : new Date(calcDateRaw);
+            if (!isNaN(calcDate.getTime()) && calcDate.getTime() < targetBoundaryDate.getTime()) {
+              excludedCount++;
+              return false;
+            }
+          }
+        }
+        return true;
+      })
+      .map(({ calc }) => calc);
+
+    if (excludedCount > 0 && targetBoundaryDate) {
+      myLog("info", "ImportTable [Boundary Guard]: Excluded %d source rows preceding boundary date %s", 
+        excludedCount, targetBoundaryDate.toISOString().split('T')[0]);
+    }
+
+    // 3. Injection (Ghost Rows)
+    if (typeof PatchManager !== 'undefined') {
+      const unused = PatchManager.getUnusedPatches(this.longName);
+      if (unused.length > 0) {
+        const withinWindow = unused.filter(ghost => {
+          if (!targetBoundaryDate) return true;
+
+          // A. Resolve date from the ghost object fields
+          let ghostDateRaw = ghost[dateFieldName];
+          
+          // B. Fallback: Parse date from PK if PK has the format Table#YYYYMMDD_... or similar
+          if (!ghostDateRaw && ghost.PK) {
+            const pkStr = String(ghost.PK);
+            const dateMatch = pkStr.match(/#(\d{8})(_|$)/) || pkStr.match(/#(\d{4}-\d{2}-\d{2})(_|$)/);
+            if (dateMatch) {
+              const rawDatePart = dateMatch[1];
+              if (rawDatePart.length === 8) {
+                // Format YYYYMMDD
+                const y = rawDatePart.substring(0, 4);
+                const m = rawDatePart.substring(4, 6);
+                const d = rawDatePart.substring(6, 8);
+                ghostDateRaw = new Date(`${y}-${m}-${d}`);
+              } else {
+                // Format YYYY-MM-DD
+                ghostDateRaw = new Date(rawDatePart);
+              }
+            }
+          }
+
+          if (ghostDateRaw) {
+            const ghostDate = ghostDateRaw instanceof Date ? ghostDateRaw : new Date(ghostDateRaw);
+            if (!isNaN(ghostDate.getTime()) && ghostDate.getTime() < targetBoundaryDate.getTime()) {
+              myLog("info", "ImportTable [Boundary Guard]: Excluded ghost entry PK '%s' with date %s (precedes boundary date %s)", 
+                ghost.PK, ghostDate.toISOString().split('T')[0], targetBoundaryDate.toISOString().split('T')[0]);
+              return false;
+            }
+          }
+          return true;
+        });
+
+        if (withinWindow.length > 0) {
+          myLog("info", "Injecting %d new manual entries (Ghost Rows) for %s", withinWindow.length, this.longName);
+          withinWindow.forEach(ghost => targetObjects.push(ghost));
+        }
+      }
+    }
+
+    // 4. Serialize results
     const newData = this._serializeObjectsToMatrix(targetObjects);
 
-    myLog("info", "Transformation complete for %s.", this.longName);
+    myLog("info", "Transformation complete for %s. (Total: %d rows)", this.longName, targetObjects.length);
     return newData;
   }
 
@@ -76,32 +197,21 @@ class ImportTable extends UpdateTable {
    * Runs a specific plan against a provided calc object.
    */
   _executePlan(calc, sourceRow, rowOff, context, plan, sourceSheet) {
+    const sourceLabels = sourceSheet ? sourceSheet.getLabels() : [];
     for (let i = 0; i < plan.length; i++) {
       const step = plan[i];
       const targetField = step.targetField;
       
-      try {
-        const rawResult = step.isSimple 
-          ? sourceRow[step.sourceIdx] 
-          : step.compiledFormula(rowOff, calc, context, this._properties);
-        
-        const fieldType = Registry.getType(this.longName, targetField);
-        calc[targetField] = TypeUtils.castType(rawResult, fieldType);
-        
-        // Border Guard: Perimeter Validation
-        const physicalRow = rowOff + (sourceSheet.firstDataRowIndex || 2);
-        TypeUtils.validate(calc[targetField], fieldType, { sheet: this.longName, row: physicalRow, col: targetField });
-        
-      } catch (e) {
-        const physicalRow = rowOff + (sourceSheet.firstDataRowIndex || 2);
-        myLog("error", "Transformation error at row %d, field %s: %s", physicalRow, targetField, e.message);
-        
-        if (typeof AuditUtils !== 'undefined') {
-          const formulaStr = this._rawFormulaMap.get(targetField) || "Implicit Default";
-          AuditUtils.logError(this.longName, physicalRow, targetField, e.message, formulaStr);
-        }
-        calc[targetField] = "";
-      }
+      const rawResult = step.isSimple 
+        ? sourceRow[step.sourceIdx] 
+        : step.compiledFormula(rowOff, calc, context, context.props, sourceRow, sourceLabels);
+      
+      const fieldType = Registry.getType(this.longName, targetField);
+      calc[targetField] = TypeUtils.castType(rawResult, fieldType);
+      
+      // Border Guard: Perimeter Validation
+      const physicalRow = rowOff + (sourceSheet.firstDataRowIndex || 2);
+      TypeUtils.validate(calc[targetField], fieldType, { sheet: this.longName, row: physicalRow, col: targetField });
     }
   }
 
@@ -111,7 +221,11 @@ class ImportTable extends UpdateTable {
    */
   _shouldKeepRow(calc, rowOff, context) {
     if (!this._compiledFilter) return true;
-    return this._compiledFilter(rowOff, calc, context, this._properties);
+    const sourceSheet = Utils.getSourceSheet(this);
+    const sourceRow = sourceSheet.getWindow()[rowOff];
+    const sourceLabels = sourceSheet.getLabels();
+    const result = this._compiledFilter(rowOff, calc, context, context.props, sourceRow, sourceLabels);
+    return TypeUtils.isTrue(result);
   }
 
   /**
@@ -141,18 +255,18 @@ class ImportTable extends UpdateTable {
 
     const sourceSheet = Utils.getSourceSheet(this);
     const sourceLongName = sourceSheet.longName;
-    const formulaCols = globals.formulasObj.getSymbolicOffsets();
 
     // 1. Fetch and Resolve mapping rules
+    const targetFieldKey = CONFIG_CONSTANTS.FORMULAS_CONFIG_PK;
+    const formulaKey = "Formula";
+    
     const parsedRules = Registry.getFormulasFor(this.longName)
       .map(row => {
-        const fullRef = String(row[formulaCols.targetField]).trim();
-        const match = fullRef.match(/\[(.*?)\]/);
-        if (fullRef.startsWith("//") || fullRef.startsWith("#") || !match) return null;
+        const targetField = row.targetField;
+        const formula = row.formula;
+        if (!targetField) return null;
 
-        const targetField = match[1].trim();
-        const formula = String(row[formulaCols.formula] || "").trim();
-        return { targetField, formula: formula === "" ? `[${targetField}]` : formula };
+        return { targetField, formula };
       })
       .filter(rule => rule !== null);
 
@@ -160,8 +274,9 @@ class ImportTable extends UpdateTable {
     parsedRules.forEach(({ targetField, formula }) => {
       try {
         const parsedFormula = FormulaUtils.parse(formula, sourceLongName, targetField, this.longName);
+        myLog("trace", "Formula Engine: Compiling %s -> %s", targetField, parsedFormula);
         this._rawFormulaMap.set(targetField, formula);
-        this._compiledFormulaMap.set(targetField, new Function('rowOff', 'calc', 'utils', 'props', 'return ' + parsedFormula));
+        this._compiledFormulaMap.set(targetField, new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return ' + parsedFormula));
       } catch (e) {
         myLog("error", "Failed to compile formula for %s: %s", targetField, e.message);
       }
@@ -173,8 +288,9 @@ class ImportTable extends UpdateTable {
         try {
           const formula = `[${targetField}]`;
           const parsedFormula = FormulaUtils.parse(formula, sourceLongName, targetField, this.longName);
+          myLog("trace", "Formula Engine: Compiling Default %s -> %s", targetField, parsedFormula);
           this._rawFormulaMap.set(targetField, formula);
-          this._compiledFormulaMap.set(targetField, new Function('rowOff', 'calc', 'utils', 'props', 'return ' + parsedFormula));
+          this._compiledFormulaMap.set(targetField, new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return ' + parsedFormula));
         } catch (e) {
           myLog("error", "Failed to compile default formula for %s: %s", targetField, e.message);
         }
@@ -187,8 +303,9 @@ class ImportTable extends UpdateTable {
     this._filterDeps = [];
     if (filterFormula) {
       const parsedFilter = FormulaUtils.parse(filterFormula, sourceLongName, "__FILTER__", this.longName);
-      this._compiledFilter = new Function('rowOff', 'calc', 'utils', 'props', 'return ' + parsedFilter);
-      this._filterDeps = FormulaUtils.extractDependencies(filterFormula);
+      myLog("info", "Filter for %s: Original='%s' | Compiled='%s'", this.longName, filterFormula, parsedFilter);
+      this._compiledFilter = new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return ' + parsedFilter);
+      this._filterDeps = FormulaUtils.extractDependencies(filterFormula, "__FILTER__");
     }
 
     // 5. Final Topological Sort
@@ -202,8 +319,18 @@ class ImportTable extends UpdateTable {
     const sourceLabels = sourceSheet.getLabels();
     return Array.from(this._compiledFormulaMap.entries()).map(([targetField, compiledFormula]) => {
       const formulaStr = this._rawFormulaMap.get(targetField) || `[${targetField}]`;
-      const match = String(formulaStr).trim().match(/^\[([a-zA-Z0-9_ ]+)\]$/);
-      const sourceIdx = match ? sourceLabels.indexOf(match[1].trim()) : -1;
+      const match = String(formulaStr).trim().match(/^\[([^\]]+)\]$/);
+      let sourceIdx = -1;
+      if (match) {
+        const sourceLabel = match[1].trim();
+        sourceIdx = sourceLabels.indexOf(sourceLabel);
+        if (sourceIdx === -1) {
+          const colIdx = this.getColOffset(targetField);
+          const colNum = colIdx + 1;
+          const colLetter = StringUtils.columnToLetter(colIdx);
+          throw new Error(`CRITICAL MAPPING ERROR: Target field '${targetField}' (Column ${colLetter}/${colNum}) requires source column '[${sourceLabel}]', but it was not found in ${sourceSheet.longName}. Available source columns: [${sourceLabels.slice(0, 5).join(", ")}...]`);
+        }
+      }
       
       return { targetField, isSimple: sourceIdx !== -1, sourceIdx, compiledFormula };
     });
@@ -215,9 +342,18 @@ class ImportTable extends UpdateTable {
   _tryFastClone(sourceSheet) {
     this.initializeMappingEngine();
     
-    if (this._rawFormulaMap.size === 0) return { success: false };
-    const bracketRegex = /^\[[a-zA-Z0-9_ ]+\]$/;
-    if (!Array.from(this._rawFormulaMap.values()).every(f => bracketRegex.test(String(f).trim()))) return { success: false };
+    // REVIEW: Bypassing Fast Clone if a filter is configured prevents filter bypass bugs.
+    // In the future, we could optimize this by executing the filter logic inside the fast clone loop itself.
+    if (this._compiledFilter) {
+      myLog("info", "Fast Clone candidate %s rejected: NewFilter is configured. Falling back to full engine.", this.longName);
+      return { success: false };
+    }
+    
+    // If we have complex formulas (non-bracket), we MUST use the full engine.
+    const bracketRegex = /^\[[^\]]+\]$/;
+    if (this._rawFormulaMap.size > 0 && !Array.from(this._rawFormulaMap.values()).every(f => bracketRegex.test(String(f).trim()))) {
+      return { success: false };
+    }
 
     myLog("info", "Fast Clone triggered for %s...", this.longName);
     const sourceWindow = sourceSheet.getWindow();
@@ -226,11 +362,19 @@ class ImportTable extends UpdateTable {
 
     const sourceIndexMap = targetLabels.map(targetField => {
       const formula = this._rawFormulaMap.get(targetField) || `[${targetField}]`;
-      const match = String(formula).trim().match(/^\[([a-zA-Z0-9_ ]+)\]$/);
+      const match = String(formula).trim().match(/^\[([^\]]+)\]$/);
       return match ? sourceLabels.indexOf(match[1].trim()) : -1;
     });
 
-    if (sourceIndexMap.includes(-1)) throw new Error(`Fast Clone Failure: Missing column in source.`);
+    const missingIdx = sourceIndexMap.indexOf(-1);
+    if (missingIdx !== -1) {
+      const targetField = targetLabels[missingIdx];
+      const colIdx = this.getColOffset(targetField);
+      const colNum = colIdx + 1;
+      const colLetter = StringUtils.columnToLetter(colIdx);
+      myLog("info", "Fast Clone candidate %s rejected: missing source column for '%s' (Column ${colLetter}/${colNum}). Falling back to full engine.", this.longName, targetField);
+      return { success: false };
+    }
 
     const result = sourceWindow.map((sourceRow, sourceRowOff) => {
       return sourceIndexMap.map((sourceIdx, targetIdx) => {
@@ -255,8 +399,14 @@ class ImportTable extends UpdateTable {
     const labels = this.getLabels();
     return objects.map(obj => {
       return labels.map(label => {
-        const val = obj[label];
+        let val = obj[label];
         const type = TypeUtils.getType(this.longName, label);
+        
+        // If the field is missing (Ghost Row), get the correct default (0, "", etc.)
+        if (val === undefined || val === null) {
+          val = TypeUtils.castType(null, type);
+        }
+        
         return TypeUtils.toSheetValue(val, type);
       });
     });

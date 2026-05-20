@@ -78,7 +78,11 @@ The system was designed to handle massive end-of-year syncs without hitting the 
 
 ---
 
-## 5. Error Resilience
+## 5. Financial Integrity Mandate (Fail-Fast)
 
-*   **Row-Level Error Trapping:** If a compiled formula throws a fatal JavaScript error (e.g., dividing by an undeclared variable), the engine catches the exception, substitutes an empty string, and gracefully continues the import.
-*   **`SyncAudit` Pipeline:** All trapped transformation errors are securely queued in memory (`250_AuditUtils.js`). At the end of the run, they are bulk-flushed to a physical `SyncAudit` sheet for human review.
+This system operates as a financial-grade ledger server. **Data Integrity is prioritized over System Availability.**
+
+*   **Hard Failures:** Silent fallbacks (e.g., substituting empty strings for errors) are strictly forbidden. If a transformation, lookup, or type-cast fails, the system MUST throw a critical exception and halt the process immediately.
+*   **Registry Enforcement:** All tables must have a valid configuration in the `NewAccounts_Sheets` registry. If a table is instantiated without a corresponding config row (except during the bootstrap phase), the system will fail fast.
+*   **Column Validation:** If a formula references a column that is missing from the source sheet, or if a target field lacks a valid data type, the engine must throw a CRITICAL MAPPING ERROR before writing any data.
+*   **Auditability:** Every failure is logged with a physical row index and full stack trace to ensure immediate human correction of the underlying source data or mapping rules.

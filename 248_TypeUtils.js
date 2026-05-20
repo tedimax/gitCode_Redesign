@@ -1,4 +1,6 @@
 "use strict";
+myLog("info", "TypeUtils Bootstrap: v4 (Sync Kick Active)");
+// Sync Kick: 22:23
 
 /**
  * gitCode_Redesign - Type Management Utility
@@ -6,6 +8,23 @@
  */
 const TypeUtils = {
   
+  /**
+   * Helper to retrieve column letter and index for error messages.
+   */
+  _getColDetails(sheet, col) {
+    if (!sheet || !col) return "";
+    try {
+      const instance = globals.sheetInstances[sheet];
+      if (instance) {
+        const colIdx = instance.getColOffset(col);
+        if (colIdx !== -1) {
+          return ` (Column ${StringUtils.columnToLetter(colIdx)}/${colIdx + 1})`;
+        }
+      }
+    } catch (e) {}
+    return "";
+  },
+
   /**
    * Casts a raw value to the specified type.
    * Functional Pattern: Pure transformation. No side effects/logging.
@@ -15,13 +34,22 @@ const TypeUtils = {
    */
   castType(val, type, context = null) {
     try {
-      if (val === null || val === undefined || val === "") return "";
-      
       const cleanType = (type || "String").trim();
+      const isEmpty = (val === null || val === undefined || val === "");
+      
+      if (isEmpty && cleanType === "String") return "";
       
       switch (cleanType) {
         case 'String':
-          if (val instanceof Date) return DateUtils.toISODate(val);
+          const isDateObj = val instanceof Date || (val && typeof val.getTime === 'function' && !isNaN(val.getTime()));
+          if (isDateObj) {
+            // If the Date object falls on the Google Sheets Time epoch (Dec 30, 1899),
+            // it is a pure time cell that is being read as a Date object. Return the Time string.
+            if (val.getFullYear() === 1899 && val.getMonth() === 11 && val.getDate() === 30) {
+              return DateUtils.toISOTime(val);
+            }
+            return DateUtils.toISODate(val);
+          }
           if (typeof val === 'number') return String(val);
           return String(val).trim().replace(/[\x00-\x1F\x7F-\x9F]/g, "");
           
@@ -65,12 +93,16 @@ const TypeUtils = {
 
         case 'DateRange':
           return this._castDateRange(val);
+
+        case 'TimeRange':
+          return DateUtils.toISOTimeRange(val);
           
         default:
           return String(val).trim();
       }
     } catch (e) {
-      const ctxStr = context ? ` [${context.sheet} Row ${context.row}, Col "${context.col}"]` : "";
+      const colDetails = this._getColDetails(context ? context.sheet : null, context ? context.col : null);
+      const ctxStr = context ? ` [${context.sheet} Row ${context.row}, Col "${context.col}"${colDetails}]` : "";
       throw new Error(`[Schema Layer] castType failure for type "${type}"${ctxStr}: ${e.message}`);
     }
   },
@@ -84,15 +116,22 @@ const TypeUtils = {
     if (val === null || val === undefined || val === "") return;
     
     const cleanType = (type || "String").trim();
-    const ctxStr = context ? ` [${context.sheet} Row ${context.row}, Col "${context.col}"]` : "";
+    const colDetails = this._getColDetails(context ? context.sheet : null, context ? context.col : null);
+    const ctxStr = context ? ` [${context.sheet} Row ${context.row}, Col "${context.col}"${colDetails}]` : "";
 
     switch (cleanType) {
       case 'Key1':
-        // Permissive suffix: Allows -, #, ., _ for negative hashes and complex generated keys
-        if (!/^[A-Za-z0-9]+#20\d\d(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])_[A-Za-z0-9#._-]+$/.test(val)) {
-          throw new Error(`Schema Validation Failure: Invalid Key1 format "${val}". Expected "prefix#yyyymmdd_suffix".${ctxStr}`);
-        }
-        break;
+      case 'Key1_Strict':
+         const sVal = String(val || "").trim();
+         // Unified Legacy-Safe Regex: supports YYYY and YYYYMMDD with symbols, allowing # in suffix
+         const pkRegex = /^[A-Za-z0-9.-]+#(20\d{2}|20\d{6})_[A-Za-z0-9.#-]+$/;
+         
+         if (!pkRegex.test(sVal)) {
+           const charCodes = sVal.split('').map(c => c.charCodeAt(0)).join(',');
+           myLog("error", "PK VALIDATION DIAGNOSTIC: Value='%s' | Codes=[%s] | Len=%d", sVal, charCodes, sVal.length);
+           throw new Error(`Schema Validation Failure (v5-Unified): Invalid Key1 format "${val}". Expected "prefix#yyyymmdd_suffix".${ctxStr}`);
+         }
+         break;
 
       case 'Integer':
         if (isNaN(parseInt(val, 10))) {
@@ -104,12 +143,6 @@ const TypeUtils = {
         const cleanCurr = String(val).replace(/[£$,\s]/g, '');
         if (isNaN(parseFloat(cleanCurr))) {
           throw new Error(`Schema Validation Failure: Expected Currency but received unparseable text "${val}".${ctxStr}`);
-        }
-        break;
-        
-      case 'Key1_Strict':
-         if (!/^[A-Za-z]+#20\d\d(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])_[A-Za-z0-9]+$/.test(val)) {
-          throw new Error(`Schema Validation Failure: Value "${val}" does not meet strict Key1 requirements.${ctxStr}`);
         }
         break;
     }
@@ -127,8 +160,9 @@ const TypeUtils = {
     switch (cleanType) {
       case 'Date':
       case 'DateTime':
+      case 'Time':
         // Use the Thunking Layer to resolve between Native Date and ISO String
-        return DateUtils.toEgressDate(val);
+        return DateUtils.toEgressDate(val, cleanType);
         
       case 'Integer':
       case 'Currency':
@@ -159,7 +193,16 @@ const TypeUtils = {
    * Retrieves the type for a specific spreadsheet column from the registry.
    */
   getType(longName, columnName) {
-    return Registry.getType(longName, columnName);
+    const regType = Registry.getType(longName, columnName);
+    if (regType && regType !== "String") return regType;
+    
+    // Auto-Type Fallback for implicit columns that copy 1:1 by exact name matches
+    const name = String(columnName || "").trim().toLowerCase();
+    if (name === "time") return "Time";
+    if (name === "date") return "Date";
+    if (name === "datetime") return "DateTime";
+    
+    return regType || "String";
   },
 
   /**

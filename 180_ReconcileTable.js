@@ -8,7 +8,18 @@
 class ReconcileTable extends Table {
   constructor(ss, longName, properties = {}) {
     super(ss, longName, properties);
+    this._mergedSourceOverride = null;
+    this.withoutValidation(); // Reconcile sheets are dynamic matching scratchpads and do not require fact validation
   }
+
+  /**
+   * Fluent API: Overrides the merged ledger source for reconciliation.
+   */
+  withMergedSource(longName) {
+    this._mergedSourceOverride = longName;
+    return this;
+  }
+
 
 
   // --- Union Find Helpers ---
@@ -55,7 +66,8 @@ class ReconcileTable extends Table {
       });
     }
 
-    const mergedTable = getSheetInstance("AnnualSummaries_NewMerged");
+    const sourceName = this._mergedSourceOverride || "AnnualSummaries_Merged";
+    const mergedTable = getSheetInstance(sourceName);
     mergedTable.fetchWindow();
     
     // 1. Extract Unreconciled Rows
@@ -214,8 +226,10 @@ class ReconcileTable extends Table {
    */
   restoreFormulas() {
     const formulas = {};
-    const base = StringUtils.toRangeName(this.longName); 
-    const mergedBase = StringUtils.toRangeName("AnnualSummaries_NewMerged");
+    const base = StringUtils.toRangeName(this.sheetName); 
+    const mergedConfig = Registry.getSheetConfig("AnnualSummaries_Merged");
+    const mergedSheetName = mergedConfig ? (mergedConfig.SheetName || "Merged") : "Merged";
+    const mergedBase = StringUtils.toRangeName(mergedSheetName);
 
     // Dynamic Named Range Builders
     const rng = (col) => base + StringUtils.toRangeName(col);
@@ -227,8 +241,11 @@ class ReconcileTable extends Table {
     formulas["AccountSum"] = `=BYROW(${rng("Transaction")}, LAMBDA(transaction_id,  IF(transaction_id="", "", SUMIFS(${rng("Amount")}, ${rng("Transaction")}, transaction_id, ${rng("EntryType")}, "Account") ) ))`;
     formulas["TransactionFY"] = `=BYROW(${rng("Transaction")}, LAMBDA(current_transaction_id, IF(current_transaction_id="", "", LET( transaction_is_balanced, INDEX(${rng("Balanced")}, MATCH(current_transaction_id, ${rng("Transaction")}, 0)), IF(transaction_is_balanced = TRUE, MAXIFS(${rng("xFY")}, ${rng("Transaction")}, current_transaction_id, ${rng("EntryType")}, "Account"), "" ) ) ) ))`;
 
+    // Calculate xFY dynamically based on the Date column (reconcile date) using April 1st FY start, named as the ending year of the FY
+    formulas["xFY"] = `=MAP(${rng("Date")}, LAMBDA(d, IF(d="", "", YEAR(d) + IF(MONTH(d) >= 4, 1, 0) )))`;
+
     // Lookup formulas
-    const lookupCols = ["xFY", "Date", "Amount", "Customer", "Description", "Category", "Account", "EntryType", "FK", "DepositID", "PaymentID"];
+    const lookupCols = ["Date", "Amount", "Customer", "Description", "Category", "Account", "EntryType", "FK", "DepositID", "PaymentID"];
     lookupCols.forEach(col => {
       // Assuming PK is in column A and we look up based on the literal PK column in Reconcile
       formulas[col] = `=ARRAYFORMULA(IF(${rng("PK")}="","",VLOOKUP(${rng("PK")}, {${mRng("PK")}, ${mRng(col)}}, 2, 0)))`;
@@ -279,10 +296,10 @@ class ReconcileTable extends Table {
     }
 
     // 2. Pre-fetch all destination tables BEFORE any mutations to avoid Google Sheets recalculation blocking
-    const groupsTable = getSheetInstance("AnnualSummaries_NewGroups");
+    const groupsTable = getSheetInstance("AnnualSummaries_Groups");
     groupsTable.fetchWindow(); 
     
-    const mergedTable = getSheetInstance("AnnualSummaries_NewMerged");
+    const mergedTable = getSheetInstance("AnnualSummaries_Merged");
     mergedTable.fetchWindow();
     
     const logTable = getSheetInstance("NewAccounts_ReconcileLog");
@@ -387,7 +404,9 @@ class ReconcileTable extends Table {
 
   _getLedgerNameFromPrefix(prefix) {
     let targetLongName = null;
-    const mergeSheetsRaw = globals.sheetsObj.lookupValue("LongName", "MergeSheets", "AnnualSummaries_NewMerged");
+    const mergeSheetsRaw = globals.sheetsObj.lookupValue("LongName", "SourceSheets", "AnnualSummaries_Merged")
+                       || globals.sheetsObj.lookupValue("LongName", "SourceSheet", "AnnualSummaries_Merged")
+                       || globals.sheetsObj.lookupValue("LongName", "MergeSheets", "AnnualSummaries_Merged");
     if (!mergeSheetsRaw) return prefix; 
     
     const mergeSheets = String(mergeSheetsRaw).split(",").map(s => s.trim());

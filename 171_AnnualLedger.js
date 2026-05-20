@@ -226,11 +226,14 @@ class AnnualLedger {
     if (this._categoryToType) return this._categoryToType;
     if (!this.namesTable || this.nameCols.name === undefined) return new Map();
 
-    this._categoryToType = new Map(
-      this.namesTable.getWindow()
-        .map(row => [row[this.nameCols.name], row[this.nameCols.type] || "General"])
-        .filter(([name]) => name !== "" && name !== null)
-    );
+    this._categoryToType = new Map();
+    this.namesTable.getWindow().forEach(row => {
+      const name = String(row[this.nameCols.name] || "").trim();
+      const type = String(row[this.nameCols.type] || "General").trim();
+      if (name) {
+        this._categoryToType.set(name.toUpperCase(), type);
+      }
+    });
     return this._categoryToType;
   }
 
@@ -317,8 +320,8 @@ class AnnualLedger {
     // Rule 1: Special Keyword "TRANSFER" overrides everything
     if (categoryUpper.includes(AnnualLedger.INGEST_CONFIG.TRANSFER_KEYWORD)) return "Transfers";
     
-    // Rule 2: Lookup the official group from the Names registry
-    const mappedGroup = this._getCategoryMap().get(category);
+    // Rule 2: Lookup the official group from the Names registry (Case-Insensitive)
+    const mappedGroup = this._getCategoryMap().get(categoryUpper);
     
     // Rule 3: Hidden system groups (like Identifiers) are treated as internal transfers
     if (mappedGroup && AnnualLedger.INGEST_CONFIG.HIDDEN_TYPES.includes(mappedGroup.toUpperCase())) return "Transfers";

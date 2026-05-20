@@ -1,0 +1,306 @@
+"use strict";
+
+/**
+ * gitCode_Redesign - Entry Point Utilities
+ * Internal helpers for Registry orchestration, window calculation, and triggering.
+ */
+
+/**
+ * Internal Helper: Resolves the active reconciliation table instance.
+ */
+function _getReconciliationInstance() {
+  try {
+    // MIGRATION ALERT: Eventually switch this from "NewReconcile" to "Reconcile"
+    const longName = "AnnualSummaries_NewReconcile"; 
+    const table = Utils.getSheetInstance(longName);
+    if (!table) throw new Error(`Could not find table instance for ${longName}`);
+    return table;
+  } catch (e) {
+    myLog("error", "Failed to resolve Reconciliation Table: %s", e.message);
+    SpreadsheetApp.getUi().alert("Reconciliation Error: Could not find the Reconcile sheet configuration in the Registry.");
+    return null;
+  }
+}
+
+/**
+ * Core Orchestrator: Imports a sheet by its unique LongName.
+ * @param {string} longName
+ * @param {boolean} forceUpdate - If true, uses the Fluent API to force update mode.
+ */
+function _importNamedSheet(longName, forceUpdate = false) {
+  initialize();
+  myLog("info", "Importing sheet: %s (Force Update: %s)", longName, forceUpdate);
+  
+  try {
+    const config = Registry.getSheetConfig(longName);
+    if (!config) {
+      throw new Error(`Registry Failure: LongName '${longName}' not found in NewAccounts_Sheets.`);
+    }
+    
+    const table = Utils.getSheetInstance(longName);
+    if (table && typeof table.execute === 'function') {
+      if (forceUpdate) table.withUpdateMode();
+      const stats = table.execute();
+      
+      // Sync the State Machine: Mark as processed even if run individually
+      const sheetsTable = globals.sheetsObj;
+      const cols = sheetsTable.getSymbolicOffsets();
+      if (cols.process !== -1) {
+        const regRowOff = sheetsTable.getRowOffset(longName);
+        if (regRowOff !== undefined) {
+           const physicalRow = regRowOff + sheetsTable.firstDataRowIndex;
+           sheetsTable.sheet.getRange(physicalRow, cols.process + 1).setValue(false);
+        }
+      }
+
+      myLog("info", "Finished importing %s", longName);
+      _triggerDownstreamSheets(longName);
+    } else {
+      myLog("warn", "Sheet %s does not support execution.", longName);
+    }
+  } catch (e) {
+    myLog("error", "Failed to import sheet %s: %s", longName, e.message);
+    SpreadsheetApp.getUi().alert(`Import Error [${longName}]: ${e.message}`);
+  }
+}
+
+/**
+ * Internal Helper: Marks downstream sheets as "Pending" (Process = TRUE) 
+ * based on the SHEET_DEPENDENCY_MAP.
+ */
+function _triggerDownstreamSheets(longName) {
+  const map = CONFIG_CONSTANTS.SHEET_DEPENDENCY_MAP;
+  const downstream = map[longName];
+  
+  if (!downstream || !downstream.length) return;
+
+  myLog("info", "Triggers: %s import complete. Queuing downstream tasks: %s", longName, downstream.join(", "));
+  
+  const sheetsTable = globals.sheetsObj;
+  const cols = sheetsTable.getSymbolicOffsets();
+  if (cols.process === -1) return;
+
+  downstream.forEach(targetLongName => {
+    const config = Registry.getSheetConfig(targetLongName);
+    if (!config) {
+      myLog("warn", "Triggers: Could not find downstream sheet '%s' in Registry.", targetLongName);
+      return;
+    }
+
+    const regRowOff = sheetsTable.getRowOffset(targetLongName);
+    if (regRowOff !== undefined) {
+      const physicalRow = regRowOff + sheetsTable.firstDataRowIndex;
+      sheetsTable.sheet.getRange(physicalRow, cols.process + 1).setValue(true);
+      myLog("info", "Triggers: Set %s to Process=TRUE", targetLongName);
+    }
+  });
+}
+
+/**
+ * Helper: Prompts the user for the Financial Year.
+ * Defaults to the current FY based on the 1st April rule.
+ */
+function _promptForYear() {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const defaultYear = (now.getMonth() < 3) ? currentYear - 1 : currentYear;
+  
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.prompt('Set Import Window', `Enter Financial Year (e.g., 2023) or leave blank for FY${defaultYear}:`, ui.ButtonSet.OK_CANCEL);
+  
+  if (response.getSelectedButton() !== ui.Button.OK) return null;
+  const val = response.getResponseText().trim();
+  return val ? Number(val) : defaultYear;
+}
+
+/**
+ * Core Orchestrator: Calculates FirstRow/LastRow and saves to Registry by LongName.
+ */
+function _calculateAndSaveWindow(longName, year) {
+  initialize();
+  myLog("info", "Setting Import Window for %s (FY%d)", longName, year);
+  
+  try {
+    const config = Registry.getSheetConfig(longName);
+    if (!config) throw new Error(`LongName '${longName}' not found in Registry.`);
+    
+    // SKIP LOGIC: External files (FileTable) and Archives should not have windows calculated
+    const type = config.SheetType || "Table";
+    if (type === "FileTable") {
+      myLog("info", "Skipping window calculation for %s (%s). It should be imported in full.", longName, type);
+      return;
+    }
+
+    const table = Utils.getSheetInstance(config.LongName);
+    if (!table || !table.sheet) throw new Error(`Physical sheet for ${longName} not found.`);
+
+    // 1. Calculate Rows
+    let firstRow, lastRow;
+    const targetDate = new Date(year - 1, 3, 1); // 1st April (Start of the Financial Year)
+    const dateFieldName = config.DateField || "Date"; // Pull from Registry
+    let calculatedFirstRow = table.calculateFirstRowByDate(targetDate, dateFieldName);
+    lastRow = table.sheet.getLastRow();
+
+    // Slack Logic: Target ledger sheets deduct 1 row to capture the last row of the previous FY
+    const isTargetSheet = longName.startsWith("Ledgers_") || longName.startsWith("ManualEntry_");
+    if (isTargetSheet) {
+        const minRow = table.firstDataRowIndex || 2;
+        const slackRow = calculatedFirstRow - 1;
+        if (slackRow >= minRow) {
+          myLog("info", "Target Slack: Deducting 1 row for %s (FY%d). Changing FirstRow from %d to %d.", 
+            longName, year, calculatedFirstRow, slackRow);
+          calculatedFirstRow = slackRow;
+        }
+    }
+    firstRow = calculatedFirstRow;
+
+    // 2. Resolve Registry Columns
+    const sheetsTable = globals.sheetsObj;
+    
+    // Broad search for FirstRow/LastRow columns
+    let firstRowCol = sheetsTable.getColOffset("FirstRow");
+    if (firstRowCol === -1) firstRowCol = sheetsTable.getColOffset("First Row");
+    if (firstRowCol === -1) firstRowCol = sheetsTable.getColOffset("firstrow");
+    
+    let lastRowCol = sheetsTable.getColOffset("LastRow");
+    if (lastRowCol === -1) lastRowCol = sheetsTable.getColOffset("Last Row");
+    if (lastRowCol === -1) lastRowCol = sheetsTable.getColOffset("lastrow");
+
+    if (firstRowCol === -1 || lastRowCol === -1) {
+      myLog("error", "Registry Column Map: %s", JSON.stringify(sheetsTable.getSymbolicOffsets()));
+      throw new Error(`Registry Metadata Error: Could not find "FirstRow" or "LastRow" columns in NewAccounts_Sheets.`);
+    }
+    
+    // Convert to 1-indexed column numbers
+    const firstRowColIdx = firstRowCol + 1;
+    const lastRowColIdx = lastRowCol + 1;
+    
+    myLog("trace", "Resolved Registry Columns -> FirstRow: %d, LastRow: %d", firstRowColIdx, lastRowColIdx);
+
+    // Force a fresh fetch of the Registry to ensure row offsets are accurate
+    sheetsTable.fetchWindow();
+
+    const regRowOff = sheetsTable.getRowOffset(longName);
+    if (regRowOff === undefined) throw new Error(`Could not find ${longName} row in NewAccounts_Sheets.`);
+    
+    const physicalRegRow = regRowOff + sheetsTable.firstDataRowIndex;
+    
+    // 3. Persist to Registry
+    sheetsTable.sheet.getRange(physicalRegRow, firstRowColIdx).setValue(firstRow);
+    sheetsTable.sheet.getRange(physicalRegRow, lastRowColIdx).setValue(lastRow);
+    
+    myLog("info", "Updated Registry for %s: FirstRow=%d, LastRow=%d", longName, firstRow, lastRow);
+  } catch (e) {
+    myLog("error", "Failed to set window for %s: %s", longName, e.message);
+  }
+}
+
+/**
+ * Core Orchestrator: Sets named ranges for a sheet by its unique LongName.
+ */
+function _defineNamedRangeForSheet(longName) {
+  initialize();
+  myLog("info", "Defining Named Ranges for: %s", longName);
+  
+  try {
+    const config = Registry.getSheetConfig(longName);
+    if (!config) {
+      throw new Error(`Registry Failure: LongName '${longName}' not found in NewAccounts_Sheets.`);
+    }
+    
+    const table = Utils.getSheetInstance(config.LongName);
+    if (table && typeof table.writeNamedRanges === 'function') {
+      table.writeNamedRanges();
+      myLog("info", "Finished defining ranges for %s", longName);
+    } else {
+      myLog("warn", "Sheet %s does not support Named Range generation.", longName);
+    }
+  } catch (e) {
+    myLog("error", "Failed to define ranges for %s: %s", longName, e.message);
+  }
+}
+
+/**
+ * Core Orchestrator
+ * Uses the year-specific configuration defined in the Registry (e.g., AnnualSummaries_2023).
+ * @param {number} year
+ * @param {number|null} forceSourceFirstRow - Optional override for batch runs.
+ */
+function _runAnnualReportForYear(year, forceSourceFirstRow = null) {
+  initialize();
+  const longName = `AnnualSummaries_${year}`;
+  
+  myLog("info", "Orchestrating Annual Report for FY%d...", year);
+
+  const report = Utils.getSheetInstance(longName);
+  if (!report) {
+    throw new Error(`Registry Failure: Configuration for '${longName}' was not found. Entry must exist in NewAccounts_Sheets.`);
+  }
+
+  // Configure and run using Fluent API
+  report.forYear(year);
+  if (forceSourceFirstRow !== null) {
+    report.withSourceRow(forceSourceFirstRow);
+  }
+  
+  report.execute();
+  myLog("info", "Annual Report for %d complete.", year);
+}
+
+/**
+ * Helper: Recursively finds all downstream dependents for a set of sheets.
+ */
+function _expandDependencies(longNames) {
+  const map = CONFIG_CONSTANTS.SHEET_DEPENDENCY_MAP;
+  const expanded = new Set(longNames);
+  const queue = [...longNames];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    const targets = map[current] || [];
+    targets.forEach(t => {
+      if (!expanded.has(t)) {
+        expanded.add(t);
+        queue.push(t);
+      }
+    });
+  }
+  return Array.from(expanded);
+}
+
+/**
+ * Helper: Orders a list of sheets so that sources are processed before targets.
+ * (Topological Sort based on SHEET_DEPENDENCY_MAP)
+ */
+function _sortSheetsByDependency(longNames) {
+  const map = CONFIG_CONSTANTS.SHEET_DEPENDENCY_MAP;
+  const sorted = [];
+  const visited = new Set();
+  const visiting = new Set(); // For cycle detection
+
+  function visit(node) {
+    if (visiting.has(node)) throw new Error("Dependency cycle detected involving: " + node);
+    if (visited.has(node)) return;
+
+    visiting.add(node);
+    
+    // Find everything this node depends on (it's a target in the map)
+    for (const [source, targets] of Object.entries(map)) {
+      if (targets.includes(node)) {
+        visit(source);
+      }
+    }
+    
+    visiting.delete(node);
+    visited.add(node);
+    
+    // Only add to result if it was in our original (or expanded) set
+    if (longNames.includes(node)) {
+      sorted.push(node);
+    }
+  }
+
+  longNames.forEach(visit);
+  return sorted;
+}
+

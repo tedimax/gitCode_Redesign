@@ -42,8 +42,8 @@ const Utils = (() => {
     
     myLog("trace", "Instantiating %s as %s (SSID: %s)", longName, Constructor.name, ssid);
 
-    // The Constructor now handles its own Registry lookup internally.
-    const instance = new Constructor(ss, longName);
+    // Pass the Registry config to the constructor so the table knows its Key/Properties
+    const instance = new Constructor(ss, longName, config);
     globals.sheetInstances[longName] = instance;
     
     return instance;
@@ -54,15 +54,44 @@ const Utils = (() => {
    * 1. Checks 'SourceSheet' in properties.
    */
   const getSourceSheet = (tableInstance) => {
-    // 1. Explicitly defined in Registry
-    const explicitSource = tableInstance.getProperty("SourceSheet");
-    if (explicitSource) {
-      const instance = getSheetInstance(explicitSource);
+    if (tableInstance._resolvedSourceSheet && !tableInstance._sourceOverride) {
+      return tableInstance._resolvedSourceSheet;
+    }
+
+    // 0. Explicit override via Fluent API
+    const override = tableInstance._sourceOverride;
+    if (override) {
+      const instance = getSheetInstance(override);
       if (instance) return instance;
     }
 
+    // 1. Explicitly defined in Registry
+    const explicitSource = tableInstance.getProperty("SourceSheets") || tableInstance.getProperty("SourceSheet");
+    if (explicitSource) {
+      if (String(explicitSource).includes(",")) {
+        const UnionTableClass = globals.tableMap['UnionTable'];
+        if (!UnionTableClass) {
+          throw new Error(`UnionTable class is not registered yet while initializing ${tableInstance.longName}.`);
+        }
+        const instance = new UnionTableClass(tableInstance.ss, "Virtual_Union", { 
+          Sources: explicitSource, 
+          SheetType: "UnionTable", 
+          SheetName: "Virtual_Union" 
+        });
+        tableInstance._resolvedSourceSheet = instance;
+        return instance;
+      }
+      
+      const instance = getSheetInstance(explicitSource);
+      if (instance) {
+        tableInstance._resolvedSourceSheet = instance;
+        return instance;
+      }
+    }
+
     // 2. Error if no source sheet is defined
-    throw new Error(`No SourceSheet defined in properties for table "${tableInstance.longName}". Virtual mapping requires an explicit driver sheet.`);
+    throw new Error(`Registry Ingestion Error: No 'SourceSheets' driver was defined for the transformation table "${tableInstance.longName}".\n\n` +
+      `👉 Action Required: Open your 'NewAccounts_Sheets' configuration table and make sure the 'SourceSheets' column is populated with the correct driver sheet name(s) for "${tableInstance.longName}".`);
   };
 
   /**

@@ -62,16 +62,32 @@ class UnionTable extends Table {
     return boundary ? boundary.name : "";
   }
 
-  /**
-   * Virtual matrix accessor.
-   * Returns a concatenated window of all sources.
-   */
   getWindow() {
     this._ensureSources();
     
-    // Concatenate all windows into one large virtual matrix
+    const unionLabels = this.getLabels();
+    
+    // Concatenate all windows, but align their columns to the unionLabels!
     this._window = this._sourceInstances.reduce((acc, source) => {
-      return acc.concat(source.getWindow());
+      const sourceLabels = source.getLabels();
+      const sourceWindow = source.getWindow();
+      
+      // If the source has the exact same labels in the exact same order, we don't need alignment
+      const isAlreadyAligned = sourceLabels.length === unionLabels.length && 
+        sourceLabels.every((l, idx) => l === unionLabels[idx]);
+        
+      if (isAlreadyAligned) {
+        return acc.concat(sourceWindow);
+      }
+      
+      // Map columns from source to union indices
+      const colMap = unionLabels.map(label => source.getColOffset(label));
+      
+      const alignedWindow = sourceWindow.map(row => {
+        return colMap.map(offset => (offset !== -1 ? row[offset] : ""));
+      });
+      
+      return acc.concat(alignedWindow);
     }, []);
 
     this.windowDataLength = this._window.length;
@@ -96,7 +112,14 @@ class UnionTable extends Table {
    */
   getLabels() {
     this._ensureSources();
-    return this._sourceInstances[0].getLabels();
+    const firstLabels = this._sourceInstances[0].getLabels();
+    if (firstLabels && firstLabels.length > 0 && (!this._labels || this._labels.length === 0)) {
+      this._labels = firstLabels;
+      this._columnMap = new Map(
+        firstLabels.map((label, offset) => [label, offset]).filter(([label]) => label !== "")
+      );
+    }
+    return firstLabels;
   }
 
   /**

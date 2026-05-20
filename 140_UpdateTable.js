@@ -17,6 +17,32 @@ class UpdateTable extends Table {
   execute() {
     myLog("info", "Starting execution for %s...", this.longName);
     
+    // UI Feedback: Toast on Start
+    let sourceName = "N/A";
+    if (typeof Utils !== 'undefined' && typeof Utils.getSourceSheet === 'function') {
+      try {
+        const src = Utils.getSourceSheet(this);
+        if (src) sourceName = src.longName || src.sheetName || "N/A";
+      } catch (e) {
+        // Safe bypass
+      }
+    }
+    if (sourceName === "N/A" && this.getProperty("sheettype") === "FileTable") {
+      sourceName = this.getProperty("FolderId") || this.getProperty("FileId") || "Google Drive Folder";
+    }
+
+    const method = this._modeOverride || (this.getProperty("importmethod") || "replace");
+    const startMsg = `Source: ${sourceName}\nMethod: ${method}`;
+    const startTitle = `🔄 Importing ${this.longName}...`;
+    
+    myLog("info", `\n============================================================\n🔄 IMPORT START: ${this.longName}\n   Source: ${sourceName}\n   Method: ${method}\n============================================================`);
+    
+    try {
+      SpreadsheetApp.getActive().toast(startMsg, startTitle, 10);
+    } catch (e) {
+      myLog("warn", "Failed to display start toast: %s", e.message);
+    }
+
     // 1. Prepare Ingestion (Transformation/Fetch)
     const newData = this.prepare() || [];
     
@@ -30,6 +56,31 @@ class UpdateTable extends Table {
     this.flushMemory();
     
     myLog("info", "Execution complete for %s. Stats: %s", this.longName, JSON.stringify(stats));
+
+    // UI Feedback: Toast on Finish
+    let finishMsg = "No changes (Up to date)";
+    if (stats) {
+      const modeStr = String(stats.mode || method).toLowerCase();
+      if (modeStr === "replace" || modeStr === "replacerows" || (stats.added > 0 && stats.updated === 0 && stats.deleted === 0)) {
+        finishMsg = `Replaced: ${stats.added || 0} rows`;
+      } else {
+        const parts = [];
+        if (stats.added) parts.push(`Added: ${stats.added}`);
+        if (stats.updated) parts.push(`Updated: ${stats.updated}`);
+        if (stats.deleted) parts.push(`Deleted: ${stats.deleted}`);
+        finishMsg = parts.length ? parts.join(", ") : "No changes (Up to date)";
+      }
+    }
+    const finishTitle = `✅ Complete: ${this.longName}`;
+    
+    myLog("info", `\n============================================================\n✅ IMPORT COMPLETE: ${this.longName}\n   Status: ${finishMsg}\n============================================================`);
+    
+    try {
+      SpreadsheetApp.getActive().toast(finishMsg, finishTitle, 5);
+    } catch (e) {
+      myLog("warn", "Failed to display finish toast: %s", e.message);
+    }
+
     return stats;
   }
 
@@ -52,15 +103,24 @@ class UpdateTable extends Table {
 
   /**
    * Main entry point for persistence.
-   * @param {string} mode - 'replace', 'update', or 'add'. Defaults to props.importmethod.
+   * @param {string} newData - The matrix of data to write.
+   * @param {string} mode - 'replace', 'update', or 'add'. Defaults to instance override or props.importmethod.
    */
-  persist(newData, mode = this.getProperty("importmethod") || "replace") {
+  persist(newData, mode = this._modeOverride || (this.getProperty("importmethod") || "replace")) {
     myLog("info", "Persisting changes to %s using mode: %s", this.longName, mode);
 
     // Fail-fast: Ensure newData is explicitly provided
     if (!newData) {
        throw new Error(`fail-fast: persist() called without newData for ${this.longName}. Data must be explicitly prepared and passed.`);
     }
+
+    // --- IN-MEMORY OVERRIDE ---
+    if (this._isInMemory) {
+      myLog("info", "In-Memory Mode: Skipping physical write for %s. Data stored in buffer (%d rows).", this.longName, newData.length);
+      this._buffer = newData;
+      return { mode: "in-memory", total: newData.length, added: 0, updated: 0, deleted: 0 };
+    }
+
 
     // 1. Transactional Locking: Prevent concurrent syncs from corrupting data
     const lock = LockService.getScriptLock();
@@ -74,25 +134,34 @@ class UpdateTable extends Table {
     try {
       // 3. Route to specific persistence logic
       let stats = { added: 0, updated: 0 };
-      switch (mode.toLowerCase()) {
+      const normalizedMode = mode.toLowerCase();
+
+      switch (normalizedMode) {
         case "replace":
+        case "replacerows":
           stats = this._persistReplace(newData);
           break;
         case "add":
+        case "addrows":
           stats = this._persistAdd(newData);
           break;
         case "update":
+        case "updaterows":
           stats = this._persistUpdate(newData);
           break;
         default:
-          throw new Error(`Persistence Error: Unknown persistence mode '${mode}' for ${this.longName}. Valid modes are 'replace', 'add', or 'update'.`);
+          throw new Error(`Persistence Error: Unknown persistence mode '${mode}' for ${this.longName}. Valid modes are 'replaceRows', 'addRows', or 'updateRows'.`);
       }
 
-      const isReplace = mode.toLowerCase() === "replace";
+      const isReplace = normalizedMode === "replace" || normalizedMode === "replacerows";
       const hasChanges = isReplace || stats.added > 0 || stats.updated > 0;
 
       if (hasChanges) {
-        // 4. Post-persistence: Sort the target sheet
+        // 4. Post-persistence: Flush buffered writes BEFORE sorting.
+        // sheet.getRange().sort() reads the physical sheet state, so any pending setValues()
+        // calls must be committed first — otherwise the sort operates on stale data and
+        // silently undoes the updates we just wrote.
+        SpreadsheetApp.flush();
         this.sortData();
       }
 
@@ -156,7 +225,7 @@ class UpdateTable extends Table {
     const rowsToAdd = newData.filter(row => {
       const rowKey = this.getRowKey(row);
       if (!rowKey) return true; // Append blindly if table lacks a Primary Key
-      return !this.getHashKeyMap().has(rowKey);
+      return !this.getHashKeyMap().has(rowKey.toLowerCase());
     });
 
     if (rowsToAdd.length > 0) {
@@ -205,7 +274,7 @@ class UpdateTable extends Table {
       const rowKey = this.getRowKey(newRow);
       if (!rowKey) return;
 
-      const existingRowOff = this.getHashKeyMap().get(rowKey);
+      const existingRowOff = this.getHashKeyMap().get(rowKey.toLowerCase());
 
       if (existingRowOff !== undefined) {
         const existingRow = this.getWindow()[existingRowOff];
@@ -214,7 +283,23 @@ class UpdateTable extends Table {
           const fieldType = fieldTypes[colOff];
           const normalizedNew = TypeUtils.castType(newVal, fieldType);
           const normalizedExisting = TypeUtils.castType(existingRow[colOff], fieldType);
-          return String(normalizedNew) !== String(normalizedExisting);
+          
+          let dirty = String(normalizedNew) !== String(normalizedExisting);
+          
+          // Fuzzy numeric comparison for numeric fields
+          if (dirty && typeof normalizedNew === 'number' && typeof normalizedExisting === 'number') {
+            dirty = Math.abs(normalizedNew - normalizedExisting) > 1e-6;
+          }
+          
+          if (labels[colOff] && labels[colOff].toUpperCase() === "PK" && dirty) {
+            dirty = String(normalizedNew).toLowerCase() !== String(normalizedExisting).toLowerCase();
+          }
+          
+          if (dirty) {
+            myLog("trace", "  Column '%s' is dirty: New [%s] vs Existing [%s] (RAW: Source [%s] / Target [%s])", 
+              labels[colOff], normalizedNew, normalizedExisting, newVal, existingRow[colOff]);
+          }
+          return dirty;
         });
         
         if (isDirty) {
@@ -274,6 +359,8 @@ class UpdateTable extends Table {
     super.flushMemory();
     myLog("trace", "Flushed memory for %s", this.longName);
   }
+
+  // Method removed - moved to base Table class
 
 }
 
