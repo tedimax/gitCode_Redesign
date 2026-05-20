@@ -230,10 +230,12 @@ const REPORT_LAYOUT = {
  */
 (function(scope) {
   
-  // Calculate Current Financial Year (April 1st rule) for stub generation
+  // Calculate Current Financial Year using the ENDING year convention (April 1st start).
+  // e.g. May 2026 is in FY 2026-27, named as 2027.
+  // e.g. Feb 2026 is in FY 2025-26, named as 2026.
   const now = new Date();
   const currentYear = now.getFullYear();
-  const currentFY = (now.getMonth() < 3) ? currentYear - 1 : currentYear;
+  const currentFY = (now.getMonth() >= 3) ? currentYear + 1 : currentYear;
 
   // 1. Generate Annual Report Year Stubs (2016 - Present)
   for (let y = 2016; y <= currentFY; y++) {
