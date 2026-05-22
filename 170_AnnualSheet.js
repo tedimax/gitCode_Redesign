@@ -21,8 +21,13 @@ class AnnualSheet extends UpdateTable {
     }
     const namesTable = getSheetInstance(properties.NamesSheet || CONFIG_CONSTANTS.DEFAULT_ANNUAL_SUMMARY_NAMES_TABLE);
 
+    if (!globals.sharedLedgers) globals.sharedLedgers = {};
+    const ledgerKey = sourceTable.longName;
+    if (!globals.sharedLedgers[ledgerKey]) {
+      globals.sharedLedgers[ledgerKey] = new AnnualLedger(sourceTable, namesTable);
+    }
+    this.ledger = globals.sharedLedgers[ledgerKey];
 
-    this.ledger = new AnnualLedger(sourceTable, namesTable);
     this.reporter = new AnnualReporter();
     this.renderer = new AnnualRenderer(this.STYLE_MAP);
 
@@ -52,6 +57,8 @@ class AnnualSheet extends UpdateTable {
     this._config.FullLoad = isFull;
     return this;
   }
+
+
 
 
   /**

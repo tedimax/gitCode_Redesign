@@ -20,8 +20,6 @@ class ImportTable extends UpdateTable {
     this._sourceOverride = longName;
     return this;
   }
-
-
   /**
    * Overrides UpdateTable.prepare
    * Explicitly triggers the transformation engine.

@@ -52,9 +52,7 @@ class Table extends Sheet {
   withUpdateMode() {
     this._modeOverride = "update";
     return this;
-  }
-
-  /**
+  }  /**
    * Fluent API: Prevents physical writes to the sheet.
    * @returns {Table}
    */
@@ -69,7 +67,6 @@ class Table extends Sheet {
   getBuffer() {
     return this._buffer;
   }
-
 
   // =========================================================================
   // FOUNDATIONAL METHODS (CONSTRUCTOR HELPERS)
@@ -286,7 +283,7 @@ class Table extends Sheet {
         let rawCleared = "true";
         if (clearedOff !== -1) {
           rawCleared = row[clearedOff];
-          isCleared = (rawCleared === true || String(rawCleared).toUpperCase() === "TRUE");
+          isCleared = (String(rawCleared).toUpperCase() === "TRUE");
         } else if (groupOff !== -1) {
           const rawGroup = row[groupOff];
           isCleared = (rawGroup !== undefined && rawGroup !== null && String(rawGroup).trim() !== "" && String(rawGroup).trim() !== "0");

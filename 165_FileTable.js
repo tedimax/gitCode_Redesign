@@ -8,16 +8,9 @@
 class FileTable extends UpdateTable {
   constructor(ss, longName, properties = {}) {
     super(ss, longName, properties);
-    this._fileIdOverride = null;
   }
 
-  /**
-   * Fluent API: Overrides the target file ID for this import run.
-   */
-  withFileId(id) {
-    this._fileIdOverride = id;
-    return this;
-  }
+
 
   /**
    * Overrides Table.prepare
@@ -42,16 +35,11 @@ class FileTable extends UpdateTable {
     const driveMimeType = this._resolveMimeType(this.getProperty("MimeType"));
     
     let latestFile;
-    if (this._fileIdOverride) {
-      latestFile = DriveApp.getFileById(this._fileIdOverride);
-      myLog("info", "FileTable %s: Using explicit File ID override -> %s", this.longName, this._fileIdOverride);
-    } else {
-      const folderId = this.getProperty("FolderID");
-      if (!folderId) {
-        throw new Error(`CRITICAL: FileTable ${this.longName} is missing a FolderID in the Registry.`);
-      }
-      latestFile = this._getLatestFile(folderId, driveMimeType);
+    const folderId = this.getProperty("FolderID");
+    if (!folderId) {
+      throw new Error(`CRITICAL: FileTable ${this.longName} is missing a FolderID in the Registry.`);
     }
+    latestFile = this._getLatestFile(folderId, driveMimeType);
 
     if (!latestFile) {
       throw new Error(`CRITICAL: FileTable ${this.longName} failed to find any files in Folder ${folderId} of type ${driveMimeType}.`);

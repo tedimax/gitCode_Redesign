@@ -88,6 +88,13 @@ const CONFIG_CONSTANTS = {
     "Ledgers_GeneratedTransactions": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
     "Ledgers_Bookings": ["Ledgers_BookingPayments", "AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
     "Ledgers_Assets": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
+    "Ledgers_Bank": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
+    "Ledgers_Cash": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
+    "Ledgers_SquareTransactions": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
+    "Ledgers_SquareDeposits": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
+    "Ledgers_SquareFees": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
+    "Ledgers_SquarePayments": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
+    "Ledgers_BookingPayments": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
     
     // Manual Entry Dependencies
     "ManualEntry_Ledger": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
@@ -147,6 +154,12 @@ const TABLE_COLUMN_MAP = {
     fy: "FY"
   },
   "AnnualSummaries_NewReconcileLog": {
+    sheetName: "SheetName",
+    transactionId: "TransactionId",
+    groupId: "GroupId",
+    clearStatus: "ClearStatus"
+  },
+  "NewAccounts_ReconcileLog": {
     sheetName: "SheetName",
     transactionId: "TransactionId",
     groupId: "GroupId",

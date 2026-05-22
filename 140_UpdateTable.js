@@ -103,7 +103,7 @@ class UpdateTable extends Table {
 
   /**
    * Main entry point for persistence.
-   * @param {string} newData - The matrix of data to write.
+   * @param {Array<Array<any>>} newData - The matrix of row data to write.
    * @param {string} mode - 'replace', 'update', or 'add'. Defaults to instance override or props.importmethod.
    */
   persist(newData, mode = this._modeOverride || (this.getProperty("importmethod") || "replace")) {
@@ -163,6 +163,9 @@ class UpdateTable extends Table {
         // silently undoes the updates we just wrote.
         SpreadsheetApp.flush();
         this.sortData();
+
+        // 5. Post-persistence: Recalculate named ranges since the physical boundary and positions have changed.
+        this.writeNamedRanges();
       }
 
       return stats;

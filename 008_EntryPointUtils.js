@@ -226,7 +226,7 @@ function _defineNamedRangeForSheet(longName) {
  * @param {number} year
  * @param {number|null} forceSourceFirstRow - Optional override for batch runs.
  */
-function _runAnnualReportForYear(year, forceSourceFirstRow = null) {
+function _runAnnualReportForYear(year, forceSourceFirstRow = null, forceFullLoad = false) {
   initialize();
   const longName = `AnnualSummaries_${year}`;
   
@@ -241,6 +241,9 @@ function _runAnnualReportForYear(year, forceSourceFirstRow = null) {
   report.forYear(year);
   if (forceSourceFirstRow !== null) {
     report.withSourceRow(forceSourceFirstRow);
+  }
+  if (forceFullLoad) {
+    report.withFullLoad();
   }
   
   report.execute();

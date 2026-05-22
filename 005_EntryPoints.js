@@ -92,7 +92,8 @@ function runAllAnnualReports() {
   myLog("info", "Entry Point: Starting batch run for all years (%d to %d)", startYear, endYear);
   
   for (let year = startYear; year <= endYear; year++) {
-    _runAnnualReportForYear(year, 2); // Force SourceFirstRow to 2
+    const isFirst = (year === startYear);
+    _runAnnualReportForYear(year, 2, isFirst); // Force SourceFirstRow to 2, and FullLoad on the first pass
   }
   
   myLog("info", "Entry Point: Batch run complete.");
@@ -377,6 +378,13 @@ function getCoreSheetConfigs() {
     label: item.label,
     longName: item.longName
   }));
+}
+
+/**
+ * Server Function: Returns the centralized sheet dependency map for interactive dependency tracking.
+ */
+function getSheetDependencyMap() {
+  return CONFIG_CONSTANTS.SHEET_DEPENDENCY_MAP;
 }
 
 /**
