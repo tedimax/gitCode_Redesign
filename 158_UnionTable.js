@@ -108,18 +108,28 @@ class UnionTable extends Table {
   }
 
   /**
-   * Overrides getLabels to reflect the schema of the FIRST source.
+   * Overrides getLabels to reflect the union of schemas from all sources.
    */
   getLabels() {
     this._ensureSources();
-    const firstLabels = this._sourceInstances[0].getLabels();
-    if (firstLabels && firstLabels.length > 0 && (!this._labels || this._labels.length === 0)) {
-      this._labels = firstLabels;
+    if (!this._labels || this._labels.length === 0) {
+      const allLabels = new Set();
+      this._sourceInstances.forEach(source => {
+        const sourceLabels = source.getLabels();
+        myLog("info", "UnionTable Source [%s] labels: %s", source.longName, JSON.stringify(sourceLabels));
+        sourceLabels.forEach(label => {
+          if (label) {
+            allLabels.add(String(label).trim());
+          }
+        });
+      });
+      this._labels = Array.from(allLabels);
       this._columnMap = new Map(
-        firstLabels.map((label, offset) => [label, offset]).filter(([label]) => label !== "")
+        this._labels.map((label, offset) => [label, offset])
       );
+      myLog("info", "UnionTable Combined labels: %s", JSON.stringify(this._labels));
     }
-    return firstLabels;
+    return this._labels;
   }
 
   /**

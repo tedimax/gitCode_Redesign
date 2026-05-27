@@ -684,18 +684,42 @@ var FormulaUtils = {
             }, {});
           });
 
+          myLog("info", "isLast Debug: Starting cache build. Total rows in window: %d. Labels: %s", _rowObjectsCache.length, JSON.stringify(labels));
+
           _rowObjectsCache.forEach((r, idx) => {
-            if (!filterFn || filterFn(r)) {
+            // Log matching values for target FYs or entry types to see raw casing/types
+            const rawEntryType = r.EntryType || r.entryType;
+            const rawFY = r.FY || r.fy;
+            const rawCleared = r.Cleared || r.cleared;
+            const rawAccount = r.Account || r.account;
+
+            if (String(rawFY) === "2027" || String(rawEntryType).toUpperCase() === "ACCOUNT") {
+              myLog("info", "isLast Row Info [%d]: Account='%s', FY='%s' (%s), EntryType='%s' (%s), Cleared='%s' (%s)",
+                idx, rawAccount, rawFY, typeof rawFY, rawEntryType, typeof rawEntryType, rawCleared, typeof rawCleared);
+            }
+
+            const passFilter = !filterFn || filterFn(r);
+            if (passFilter) {
               const k = String(keyFn(r));
               _lastIdxCache.set(k, idx);
+              myLog("info", "isLast Filter Match [%d]: Key='%s'", idx, k);
             }
           });
           _lastIdxCacheBuilt = true;
-          myLog("info", "Formula Engine: Built isLast cache for %s (%d keys).", driver.longName, _lastIdxCache.size);
+          myLog("info", "Formula Engine: Built isLast cache for %s (%d keys). Cache entries: %s", 
+            driver.longName, _lastIdxCache.size, JSON.stringify(Object.fromEntries(_lastIdxCache)));
         }
 
         const rCurrent = _rowObjectsCache[rowOff];
-        return _lastIdxCache.get(String(keyFn(rCurrent))) === rowOff;
+        const key = rCurrent ? String(keyFn(rCurrent)) : "UNKNOWN_KEY";
+        const lastIdx = _lastIdxCache.get(key);
+        const result = lastIdx === rowOff;
+        
+        if (rCurrent && (String(rCurrent.FY) === "2027" || String(rCurrent.EntryType).toUpperCase() === "ACCOUNT")) {
+          myLog("info", "isLast Eval [%d]: Key='%s', LastMatchedIndex=%s, EvalResult=%s", 
+            rowOff, key, lastIdx, result);
+        }
+        return result;
       }
     };
   }

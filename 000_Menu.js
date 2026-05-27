@@ -15,7 +15,8 @@ function onOpen() {
   // Calculate Current Financial Year (April 1st rule)
   const now = new Date();
   const currentYear = now.getFullYear();
-  const currentFY = (now.getMonth() < 3) ? currentYear - 1 : currentYear;
+  // FY is labelled by its END year (e.g. Apr 2026 - Mar 2027 = FY2027)
+  const currentFY = (now.getMonth() >= 3) ? currentYear + 1 : currentYear;
 
   // 1. Annual Reports Submenu (Dynamic)
   const singleYearMenu = ui.createMenu('📅 Single Year Run');
@@ -37,7 +38,6 @@ function onOpen() {
 
   // 3. Import Submenu (Dynamic)
   const namedImportMenu = ui.createMenu('Import Named Sheet');
-  const setWindowMenu = ui.createMenu('Set Window for Sheet');
   const namedRangeMenu = ui.createMenu('Set Named Range for Sheet');
 
   CONFIG_CONSTANTS.CORE_SHEET_CONFIG.forEach(item => {
@@ -45,7 +45,6 @@ function onOpen() {
     if (!item.longName.startsWith("ManualEntry_")) {
       namedImportMenu.addItem(item.label, `importSheet${safeName}`);
     }
-    setWindowMenu.addItem(item.label, `setWindow${safeName}`);
     namedRangeMenu.addItem(item.label, `defineSheet${safeName}`);
   });
 
@@ -53,10 +52,7 @@ function onOpen() {
     .addItem('📄 Import Current Sheet', 'importActiveSheet')
     .addItem('🛠️ Repair Manager...', 'showRepairManager')
     .addSeparator()
-    .addSubMenu(ui.createMenu('Set Import Window')
-      .addItem('🪟 Set Window (Active)', 'setImportWindowActive')
-      .addSubMenu(setWindowMenu)
-      .addItem('🏁 Set All Windows', 'setAllWindows'))
+    .addItem('🏁 Set All Windows', 'setAllWindows')
     .addSeparator()
     .addSubMenu(namedImportMenu)
     .addSeparator()

@@ -87,7 +87,8 @@ function runAllAnnualReports() {
   const startYear = 2016;
   const now = new Date();
   const currentYear = now.getFullYear();
-  const endYear = (now.getMonth() < 3) ? currentYear - 1 : currentYear;
+  // FY is labelled by its END year (e.g. Apr 2026 - Mar 2027 = FY2027)
+  const endYear = (now.getMonth() >= 3) ? currentYear + 1 : currentYear;
   
   myLog("info", "Entry Point: Starting batch run for all years (%d to %d)", startYear, endYear);
   
@@ -296,21 +297,7 @@ function markAllDirty() {
 }
 
 
-/**
- * Entry Point: Sets import window for the active sheet.
- */
-function setImportWindowActive() {
-  const activeSheet = SpreadsheetApp.getActiveSheet();
-  const year = _promptForYear();
-  if (year) {
-    const config = Registry.getSheetConfigBySheetName(activeSheet.getName());
-    if (config) {
-      _calculateAndSaveWindow(config.LongName, year);
-    } else {
-       SpreadsheetApp.getUi().alert("Active sheet is not recognized in the Registry.");
-    }
-  }
-}
+
 
 /**
  * Entry Point: Sets windows for all core sheets.
@@ -328,8 +315,12 @@ function setAllWindows() {
     sheetsTable.getWindow().forEach(row => {
       const longName = row[longNameCol];
       if (longName) {
-        const isTargetOrManual = longName.startsWith("Ledgers_") || longName.startsWith("ManualEntry_");
-        if (isTargetOrManual) {
+        const isWindowed = longName.startsWith("Ledgers_") 
+                        || longName.startsWith("ManualEntry_")
+                        || longName === "AnnualSummaries_Merged"
+                        || longName === "AnnualSummaries_UnChecked"
+                        || longName === "AnnualSummaries_Groups";
+        if (isWindowed) {
           _calculateAndSaveWindow(longName, year);
           calculatedCount++;
         }
@@ -338,12 +329,20 @@ function setAllWindows() {
   } else {
     // Fallback if LongName column mapping is unavailable
     CONFIG_CONSTANTS.CORE_SHEET_CONFIG.forEach(item => {
-      _calculateAndSaveWindow(item.longName, year);
-      calculatedCount++;
+      const longName = item.longName;
+      const isWindowed = longName.startsWith("Ledgers_") 
+                      || longName.startsWith("ManualEntry_")
+                      || longName === "AnnualSummaries_Merged"
+                      || longName === "AnnualSummaries_UnChecked"
+                      || longName === "AnnualSummaries_Groups";
+      if (isWindowed) {
+        _calculateAndSaveWindow(longName, year);
+        calculatedCount++;
+      }
     });
   }
   
-  SpreadsheetApp.getUi().alert(`Finished setting windows for all ${calculatedCount} target and manual entry sheets for FY${year}.`);
+  SpreadsheetApp.getUi().alert(`Finished setting windows for all ${calculatedCount} target, manual entry, and summary sheets for FY${year}.`);
 }
 
 /**

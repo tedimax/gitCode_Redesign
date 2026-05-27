@@ -5,7 +5,7 @@
  * All system-wide fixed values go here.
  */
 const CONFIG_CONSTANTS = {
-  VERSION: "v1.1.8",
+  VERSION: "v1.1.13-debug",
   ANCHOR_SSID: "13Uv4dP6fSnEyrU1GXvKvgKziLakeuWTjXOZiyNpFlPU", // NewAccounts SSID
   SHEETS_CONFIG_NAME: "NewAccounts_Sheets",
   DATATYPES_SHEET_NAME: "NewAccounts_DataTypes",
@@ -19,10 +19,12 @@ const CONFIG_CONSTANTS = {
   DEFAULT_LABEL_ROW: 1,
   DEFAULT_TIMEZONE: "Europe/London",
   DECIMAL_PRECISION: 2,
+  FUZZY_NUMERIC_THRESHOLD: 0.005,
   HASH_PREFIX: "#",
   RANGE_NAME_REGEX: /[^a-zA-Z0-9_]/g,
   USE_NATIVE_DATES_FOR_SHEET: true, // Toggle between true (Native Date) and false (ISO String)
   DEFAULT_ANNUAL_SUMMARY_SOURCE_TABLE: "AnnualSummaries_Merged",
+  RECONCILE_IDENTIFIER_FIELDS: ["pk", "fk", "depositId", "paymentId"],
   DEFAULT_ANNUAL_SUMMARY_NAMES_TABLE: "AnnualSummaries_Names",
   DEFAULT_ASSET_LEDGERS: ["Ledgers_Bank", "Ledgers_Cash", "Ledgers_Assets"],
   // Definitive mapping of high-fidelity LongNames to user-friendly labels
@@ -61,10 +63,7 @@ const CONFIG_CONSTANTS = {
     
     // Summary Sheets
     { label: "🔗 Merged", longName: "AnnualSummaries_Merged" },
-    { label: "🔍 Unchecked", longName: "AnnualSummaries_UnChecked" },
-    
-    // Prototype
-    { label: "🧪 Prototype", longName: "NewAccounts_TestSheetDest" }
+    { label: "🔍 Unchecked", longName: "AnnualSummaries_UnChecked" }
   ],
 
   // Dependency Map: When Key is imported, mark all values as Pending (Process = TRUE)
@@ -77,30 +76,33 @@ const CONFIG_CONSTANTS = {
     "ImportsArchive_FileSQTX": ["ImportsArchive_RawSQTX"],
 
     // Archive -> Ledger Links
-    "ImportsArchive_RawBank": ["Ledgers_Bank", "AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
+    "ImportsArchive_RawBank": ["Ledgers_Bank", "AnnualSummaries_Merged"],
 
-    "ImportsArchive_RawCash": ["Ledgers_Cash", "AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "ImportsArchive_RawSQTX": ["Ledgers_SquareTransactions", "Ledgers_SquareFees", "Ledgers_SquareDeposits", "AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "ImportsArchive_RawSQTF": ["Ledgers_SquareFees", "AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "ImportsArchive_RawSMPay": ["Ledgers_BookingPayments", "AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "ImportsArchive_RawSMApp": ["Ledgers_Bookings", "AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "Ledgers_Transactions": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "Ledgers_GeneratedTransactions": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "Ledgers_Bookings": ["Ledgers_BookingPayments", "AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "Ledgers_Assets": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "Ledgers_Bank": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "Ledgers_Cash": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "Ledgers_SquareTransactions": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "Ledgers_SquareDeposits": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "Ledgers_SquareFees": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "Ledgers_SquarePayments": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "Ledgers_BookingPayments": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
+    "ImportsArchive_RawCash": ["Ledgers_Cash", "AnnualSummaries_Merged"],
+    "ImportsArchive_RawSQTX": ["Ledgers_SquareTransactions", "Ledgers_SquareFees", "Ledgers_SquareDeposits", "AnnualSummaries_Merged"],
+    "ImportsArchive_RawSQTF": ["Ledgers_SquareFees", "AnnualSummaries_Merged"],
+    "ImportsArchive_RawSMPay": ["Ledgers_BookingPayments", "AnnualSummaries_Merged"],
+    "ImportsArchive_RawSMApp": ["Ledgers_Bookings", "AnnualSummaries_Merged"],
+    "Ledgers_Transactions": ["AnnualSummaries_Merged"],
+    "Ledgers_GeneratedTransactions": ["AnnualSummaries_Merged"],
+    "Ledgers_Bookings": ["Ledgers_BookingPayments", "AnnualSummaries_Merged"],
+    "Ledgers_Assets": ["AnnualSummaries_Merged"],
+    "Ledgers_Bank": ["AnnualSummaries_Merged"],
+    "Ledgers_Cash": ["AnnualSummaries_Merged"],
+    "Ledgers_SquareTransactions": ["AnnualSummaries_Merged"],
+    "Ledgers_SquareDeposits": ["AnnualSummaries_Merged"],
+    "Ledgers_SquareFees": ["AnnualSummaries_Merged"],
+    "Ledgers_SquarePayments": ["AnnualSummaries_Merged"],
+    "Ledgers_BookingPayments": ["AnnualSummaries_Merged"],
+    
+    // Merged -> Unchecked Link
+    "AnnualSummaries_Merged": ["AnnualSummaries_UnChecked"],
     
     // Manual Entry Dependencies
-    "ManualEntry_Ledger": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "ManualEntry_Holdings": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"],
-    "ManualEntry_Cashbox": ["AnnualSummaries_Merged", "AnnualSummaries_UnChecked"]
-    },
+    "ManualEntry_Ledger": ["AnnualSummaries_Merged"],
+    "ManualEntry_Holdings": ["AnnualSummaries_Merged"],
+    "ManualEntry_Cashbox": ["AnnualSummaries_Merged"]
+  },
 
   // Fields that must not be empty in data tables (Literal Column Headers)
   MANDATORY_TABLE_FIELDS: ["PK", "Amount", "Account", "FY", "Category", "Group", "EntryType"],
@@ -129,7 +131,8 @@ const TABLE_COLUMN_MAP = {
     fk: "FK",
     depositId: "DepositID",
     paymentId: "PaymentID",
-    group: "Group"
+    group: "Group",
+    date: "Date"
   },
   "AnnualSummaries_Names": {
     name: "Name",
@@ -139,7 +142,8 @@ const TABLE_COLUMN_MAP = {
     pk: "PK",
     transaction: "Transaction",
     balanced: "Balanced",
-    transactionFY: "TransactionFY"
+    transactionFY: "TransactionFY",
+    date: "Date"
   },
   "AnnualSummaries_NewGroups": {
     pk: "PK",
@@ -257,18 +261,13 @@ const REPORT_LAYOUT = {
     };
   }
 
-  // 2. Generate Core Sheet Stubs (Import, Window, Range)
+  // 2. Generate Core Sheet Stubs (Import, Range)
   CONFIG_CONSTANTS.CORE_SHEET_CONFIG.forEach(item => {
     const safeName = item.longName.replace(/[^a-zA-Z0-9]/g, '');
     
     // Import Trigger
     scope[`importSheet${safeName}`] = function() {
       _importNamedSheet(item.longName);
-    };
-    
-    // Window Trigger
-    scope[`setWindow${safeName}`] = function() {
-      _calculateAndSaveWindow(item.longName, _promptForYear());
     };
     
     // Range Trigger

@@ -35,23 +35,11 @@ class ReconcileTable extends ReconcileProcessor {
   startNewReconciliation() {
     myLog("info", "Starting new reconciliation on %s", this.longName);
 
-    // Fetch existing Reconcile table to preserve manual Transaction IDs
-    this.fetchWindow();
-    const reconcileCols = this.getSymbolicOffsets();
-    const existingTxMap = new Map();
+    // 1. Load existing manual Transaction IDs from the Reconcile sheet
+    const existingTxMap = this._loadExistingManualTxIds();
 
-    if (reconcileCols.pk !== -1 && reconcileCols.transaction !== -1) {
-      this.getWindow().forEach(row => {
-        const pk = StringUtils.sanitizeName(row[reconcileCols.pk]);
-        const tx = StringUtils.sanitizeName(row[reconcileCols.transaction]);
-        if (pk && tx) existingTxMap.set(pk, tx);
-      });
-    }
-
+    // 2. Extract unreconciled rows from Merged sheet
     const mergedTable = getSheetInstance("AnnualSummaries_Merged");
-    mergedTable.fetchWindow();
-
-    // 1. Extract Unreconciled Rows
     const unreconciledRows = this._extractUnreconciledRows(mergedTable, existingTxMap);
 
     if (unreconciledRows.length === 0) {
@@ -61,28 +49,72 @@ class ReconcileTable extends ReconcileProcessor {
       return;
     }
 
-    // 2. Sort Rows (Accounts first then by Account Type, Activities by prefix)
-    const sortedRows = this._sortUnreconciledRows(unreconciledRows);
+    // 3. Group rows using Union-Find and designate group representatives (preferring Accounts)
+    const parentMap = this._buildUnionFindGroups(unreconciledRows);
+    this._resolveGroupRepresentatives(unreconciledRows, parentMap);
 
-    // 3. Build Union-Find Groups
-    const parentMap = this._buildUnionFindGroups(sortedRows);
+    // 4. Sort rows using Group-Priority sorting (keeps connected groups contiguous)
+    const sortedRows = this._sortGroupedRows(unreconciledRows);
 
-    // 4. Assign Transaction IDs & Generate Output
-    // Pass the max existing transaction ID to ensure new IDs don't collide
-    const existingTxIds = Array.from(existingTxMap.values()).map(Number).filter(n => !isNaN(n));
-    const nextTxId = existingTxIds.length > 0 ? Math.max(...existingTxIds) + 1 : 1;
-    const outputData = this._generateReconcileOutput(sortedRows, parentMap, nextTxId);
+    // 5. Assign Transaction IDs & generate output data
+    const nextTxId = this._calculateNextTransactionId(existingTxMap);
 
-    // 5. Write to Sheet
-    this.clearDataArea();
-    if (outputData.length > 0) {
-      // Offset by 1 row to leave the first data row strictly for formulas
-      this.writeBlock(this.firstDataRowIndex + 1, outputData);
+    // 6. Present / Render output to Reconcile sheet
+    const renderer = new ReconcileRenderer(this);
+    const count = renderer.render(sortedRows, nextTxId);
+    myLog("info", "Reconciliation started. Wrote %d rows.", count);
+  }
+
+  /**
+   * Loads existing manually entered Transaction IDs from the Reconcile sheet to preserve them.
+   * @returns {Map<string, string>} PK -> Transaction ID
+   */
+  _loadExistingManualTxIds() {
+    const reconcileCols = this.getSymbolicOffsets();
+    const existingTxMap = new Map();
+
+    if (reconcileCols.pk !== -1 && reconcileCols.transaction !== -1) {
+      this.getWindow().forEach(row => {
+        const pk = row[reconcileCols.pk];
+        const tx = row[reconcileCols.transaction];
+        if (pk && tx) existingTxMap.set(pk, String(tx).trim());
+      });
     }
+    return existingTxMap;
+  }
 
-    // 6. Restore Formulas
-    this.restoreFormulas();
-    myLog("info", "Reconciliation started. Wrote %d rows.", outputData.length);
+  /**
+   * Identifies the best representative for each group (preferring ACCOUNT rows)
+   * and attaches it to the rootRow property of each transaction row.
+   */
+  _resolveGroupRepresentatives(unreconciledRows, parentMap) {
+    const rootToRowsMap = new Map();
+    unreconciledRows.forEach((row, i) => {
+      const rootIdx = this.root(i, parentMap);
+      if (!rootToRowsMap.has(rootIdx)) {
+        rootToRowsMap.set(rootIdx, []);
+      }
+      rootToRowsMap.get(rootIdx).push(row);
+    });
+
+    const rootToRepMap = new Map();
+    rootToRowsMap.forEach((rows, rootIdx) => {
+      const accountRow = rows.find(r => r.entryType === "ACCOUNT");
+      rootToRepMap.set(rootIdx, accountRow || unreconciledRows[rootIdx]);
+    });
+
+    unreconciledRows.forEach((row, i) => {
+      const rootIdx = this.root(i, parentMap);
+      row.rootRow = rootToRepMap.get(rootIdx);
+    });
+  }
+
+  /**
+   * Calculates the next starting Transaction ID based on existing preserved IDs.
+   */
+  _calculateNextTransactionId(existingTxMap) {
+    const existingTxIds = Array.from(existingTxMap.values()).map(Number).filter(n => !isNaN(n));
+    return existingTxIds.length > 0 ? Math.max(...existingTxIds) + 1 : 1;
   }
 
 
@@ -98,7 +130,7 @@ class ReconcileTable extends ReconcileProcessor {
    */
   processBalancedRows() {
     myLog("info", "Processing balanced rows in %s", this.longName);
-    this.fetchWindow();
+    this.getWindow();
 
     // 1. Identify which rows are balanced and collect their data
     const { balancedTxs, rowsToDelete } = this._collectBalancedTransactions();
@@ -131,13 +163,23 @@ class ReconcileTable extends ReconcileProcessor {
       myLog("warn", "No rows staged for ReconcileLog. ColLabels length: %d", logTable.getLabels().length);
     }
 
-    // 6. Clear processed rows from the Reconcile sheet
-    this._clearReconciledRows(rowsToDelete);
+    // 6. Clear caches to force a fresh fetch from Google Sheets
+    this.clearCache();
+    mergedTable.clearCache();
 
-    // 7. Restore array formulas to the first data row
-    this.restoreFormulas();
+    // 7. Re-render the Reconcile sheet cleanly, fully compacted
+    myLog("info", "Balanced rows committed. Re-building the Reconcile sheet to compact it.");
+    this.startNewReconciliation();
 
     myLog("info", "Processed %d balanced rows successfully.", balancedTxs.length);
+  }
+
+  /**
+   * Restores the complex array formulas to the first data row of the Reconcile sheet.
+   * Delegates layout presentation to the ReconcileRenderer layout engine.
+   */
+  restoreFormulas() {
+    new ReconcileRenderer(this).restoreFormulas();
   }
 }
 

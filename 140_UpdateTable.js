@@ -291,7 +291,7 @@ class UpdateTable extends Table {
           
           // Fuzzy numeric comparison for numeric fields
           if (dirty && typeof normalizedNew === 'number' && typeof normalizedExisting === 'number') {
-            dirty = Math.abs(normalizedNew - normalizedExisting) > 1e-6;
+            dirty = Math.abs(normalizedNew - normalizedExisting) > CONFIG_CONSTANTS.FUZZY_NUMERIC_THRESHOLD;
           }
           
           if (labels[colOff] && labels[colOff].toUpperCase() === "PK" && dirty) {

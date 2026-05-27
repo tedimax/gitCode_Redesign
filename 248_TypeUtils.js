@@ -37,7 +37,7 @@ const TypeUtils = {
       const cleanType = (type || "String").trim();
       const isEmpty = (val === null || val === undefined || val === "");
       
-      if (isEmpty && cleanType === "String") return "";
+      if (isEmpty && ["String", "Key1", "Key2", "rangeNames"].includes(cleanType)) return "";
       
       switch (cleanType) {
         case 'String':
@@ -51,7 +51,10 @@ const TypeUtils = {
             return DateUtils.toISODate(val);
           }
           if (typeof val === 'number') return String(val);
-          return String(val).trim().replace(/[\x00-\x1F\x7F-\x9F]/g, "");
+          const strVal = String(val).trim().replace(/[\x00-\x1F\x7F-\x9F]/g, "");
+          const lowerStr = strVal.toLowerCase();
+          if (lowerStr === "null" || lowerStr === "undefined") return "";
+          return strVal;
           
         case 'Integer':
           return parseInt(val, 10) || 0;
@@ -61,9 +64,9 @@ const TypeUtils = {
           return parseFloat(cleanCurr) || 0;
 
         case 'Percentage':
-          const strVal = String(val).trim();
-          const isPercentString = strVal.endsWith('%');
-          const cleanPerc = strVal.replace(/[£$,%\s]/g, '');
+          const percentStr = String(val).trim();
+          const isPercentString = percentStr.endsWith('%');
+          const cleanPerc = percentStr.replace(/[£$,%\s]/g, '');
           let numPerc = parseFloat(cleanPerc) || 0;
           if (isPercentString) numPerc = numPerc / 100;
           return numPerc;
@@ -86,7 +89,10 @@ const TypeUtils = {
           
         case 'Key1':
         case 'Key2':
-          return String(val).trim();
+          const keyStr = String(val).trim();
+          const keyLower = keyStr.toLowerCase();
+          if (keyLower === "null" || keyLower === "undefined") return "";
+          return keyStr;
           
         case 'rangeNames':
           return String(val).trim().replace(CONFIG_CONSTANTS.RANGE_NAME_REGEX, '_');
@@ -98,7 +104,10 @@ const TypeUtils = {
           return DateUtils.toISOTimeRange(val);
           
         default:
-          return String(val).trim();
+          const defStr = String(val).trim();
+          const defLower = defStr.toLowerCase();
+          if (defLower === "null" || defLower === "undefined") return "";
+          return defStr;
       }
     } catch (e) {
       const colDetails = this._getColDetails(context ? context.sheet : null, context ? context.col : null);
