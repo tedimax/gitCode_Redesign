@@ -18,254 +18,228 @@ class ReconcileProcessor extends ReconcileBuilder {
   /**
    * Scans the Reconcile window and returns all rows where Balanced = TRUE,
    * along with the physical row indices that should be cleared afterwards.
-   * @returns {{ balancedTxs: Array, rowsToDelete: number[] }}
+   * @returns {{ balancedTxs: Array }}
    */
   _collectBalancedTransactions() {
     const reconcileCols = this.getSymbolicOffsets();
-    const balancedTxs   = [];
-    const rowsToDelete  = [];
 
-    this.getWindow().forEach((row, offset) => {
-      if (TypeUtils.isTrue(row[reconcileCols.balanced])) {
+    const balancedTxs = this.getWindow()
+      .filter(row => TypeUtils.isTrue(row[reconcileCols.balanced]))
+      .map(row => {
         let fy = String(row[reconcileCols.transactionFY] || "").trim();
         if (!fy && reconcileCols.date !== undefined && reconcileCols.date !== -1 && row[reconcileCols.date]) {
           fy = DateUtils.toFY(row[reconcileCols.date]);
         }
 
-        balancedTxs.push({
+        return {
           PK:      String(row[reconcileCols.pk]),
           Group:   row[reconcileCols.transaction],
           Cleared: true,
           FY:      fy
-        });
-        rowsToDelete.push(offset + this.firstDataRowIndex);
-      }
-    });
+        };
+      });
 
-    return { balancedTxs, rowsToDelete };
+    // rowsToDelete has been deprecated since the Reconcile sheet is now fully regenerated
+    return { balancedTxs };
   }
 
   /**
-   * Opens and fetches all destination tables before any write operations.
-   * Batching reads first prevents Google Sheets recalculation from blocking writes.
+   * Initializes destination tables for the reconciliation process.
    * @returns {{ groupsTable: UpdateTable, mergedTable: Table, logTable: UpdateTable }}
    */
   _prefetchDestinationTables() {
     const groupsTable = getSheetInstance("AnnualSummaries_Groups");
-    // Groups sheet has formula columns beyond D that return #N/A when unpopulated.
-    // We only read columns A-D (PK, Group, Cleared, FY) so bypass full type validation.
+    // Groups sheet may contain formula columns that return #N/A when unpopulated.
+    // We bypass full type validation to avoid errors when reading these cells.
     groupsTable.withoutValidation();
-    // Optimized: Do not call groupsTable.fetchWindow() to avoid loading all 10,800+ rows.
-    // We will selectively load only the bottom of the sheet when computing next group ID.
 
     const mergedTable = getSheetInstance("AnnualSummaries_Merged");
-    mergedTable.getWindow(); // Eagerly loads the window into RAM on first access
-
     const logTable = getSheetInstance("NewAccounts_ReconcileLog");
-    logTable.getWindow(); // May be empty, but safely initialized
 
     return { groupsTable, mergedTable, logTable };
   }
 
   /**
-   * Assigns a GlobalGroupID to each balanced transaction, then for each:
-   *   A. Stages a row for AnnualSummaries_Groups
-   *   B. Writes Cleared & Group directly to AnnualSummaries_Merged
-   *   C. Stages a row for NewAccounts_ReconcileLog
-   * @param {Array}       balancedTxs
-   * @param {UpdateTable} groupsTable
-   * @param {Table}       mergedTable
-   * @param {UpdateTable} logTable
-   * @returns {{ groupsNewData: Array<Array<any>>, logNewData: Array<Array<any>> }}
+   * Orchestrates the transformation of balanced transactions into output formats.
+   * Generates new Global Group IDs, builds new rows for Groups and Log sheets,
+   * and builds batches for the Merged sheet (does not execute them).
+   * 
+   * @param {Array} balancedTxs - Array of objects from _collectBalancedTransactions
+   * @param {UpdateTable} groupsTable 
+   * @param {Table} mergedTable 
+   * @param {UpdateTable} logTable 
+   * @returns {{ groupsNewData: Array, logNewData: Array, mergedBatches: Object }}
    */
-  _stageAndApplyGroupUpdates(balancedTxs, groupsTable, mergedTable, logTable) {
-    const groupCols  = groupsTable.getSymbolicOffsets();
-    const mergedCols = mergedTable.getSymbolicOffsets();
-    const logCols    = logTable.getSymbolicOffsets();
+  _stageGroupUpdates(balancedTxs, groupsTable, mergedTable, logTable) {
+    // 1. Assign auto-incrementing Global Group IDs
+    const nextGroupId = this._calculateNextGlobalGroupId(groupsTable);
+    const txsWithGlobalIds = this._assignGlobalGroupIds(balancedTxs, nextGroupId);
 
-    // Optimized: Fetch only the last 50 rows of Groups to locate the highest Group ID,
-    // relying on the sheet being kept sorted by Group in ascending order.
-    groupsTable.ensureRows(50);
+    // 2. Generate 2D physical matrix payloads for the destination sheets
+    const groupsNewData = this._buildGroupsTableRows(txsWithGlobalIds, groupsTable, mergedTable);
+    const logNewData = this._buildReconcileLogRows(txsWithGlobalIds, logTable);
 
+    // 3. Accumulate logical batch updates for the Merged sheet
+    const mergedBatches = this._buildMergedTableBatchUpdates(txsWithGlobalIds, mergedTable);
+
+    return { groupsNewData, logNewData, mergedBatches };
+  }
+
+  /**
+   * Scans the existing Groups table to find the highest GlobalGroupID in use.
+   * Calculates and returns the next available integer ID.
+   * 
+   * @param {UpdateTable} groupsTable
+   * @returns {number} The next starting GlobalGroupID
+   */
+  _calculateNextGlobalGroupId(groupsTable) {
+    const groupCols = groupsTable.getSymbolicOffsets();
     const existingGroupIds = groupsTable.getWindow()
       .map(row => groupCols.group !== -1 ? Number(row[groupCols.group]) : 0)
       .filter(n => !isNaN(n));
-    let nextGlobalGroupId = existingGroupIds.length > 0 ? Math.max(...existingGroupIds) + 1 : 1;
+    return existingGroupIds.length > 0 ? Math.max(...existingGroupIds) + 1 : 1;
+  }
 
+  /**
+   * Assigns a consistent GlobalGroupID to each local transaction group.
+   * Returns a new array of transactions enriched with this global ID, 
+   * preserving the original objects.
+   * 
+   * @param {Array} balancedTxs - Array of local transaction objects
+   * @param {number} nextGlobalGroupId - The starting ID to assign
+   * @returns {Array} New array of transactions with GlobalGroupID attached
+   */
+  _assignGlobalGroupIds(balancedTxs, nextGlobalGroupId) {
     const localToGlobalTxMap = new Map();
-    const groupsNewData = [];
-    const logNewData    = [];
-
-    // Batch writes mapping for Merged updates
-    const mergedClearedA1List = [];
-    const mergedGroupsA1ByVal = new Map();
-    const mergedFYA1ByVal = new Map();
-
-    balancedTxs.forEach(tx => {
-      // Assign a stable global group ID per local transaction group
+    return balancedTxs.map(tx => {
       if (!localToGlobalTxMap.has(tx.Group)) {
         localToGlobalTxMap.set(tx.Group, nextGlobalGroupId++);
       }
-      tx.GlobalGroupID = localToGlobalTxMap.get(tx.Group);
+      return { ...tx, GlobalGroupID: localToGlobalTxMap.get(tx.Group) };
+    });
+  }
 
-      const cleanPk = tx.PK;
-      const mRowOff = mergedTable.getRowOffset(cleanPk);
+  /**
+   * Generates a 2D array of row data intended for the Groups table.
+   * Dynamically populates core transaction values (PK, GroupID, Cleared, FY)
+   * and copies any additional columns from the Merged table by header name.
+   * The resulting array is sorted ascending by Group ID.
+   * 
+   * @param {Array} txsWithGlobalIds - Array of enriched transaction objects
+   * @param {UpdateTable} groupsTable
+   * @param {Table} mergedTable
+   * @returns {Array<Array<any>>} The newly generated rows ready for persistence
+   */
+  _buildGroupsTableRows(txsWithGlobalIds, groupsTable, mergedTable) {
+    const groupCols = groupsTable.getSymbolicOffsets();
+    const groupTableLabels = groupsTable.getLabels();
 
-      // A. Stage row for Groups sheet
-      const gRow = new Array(groupsTable.getLabels().length).fill("");
-      if (groupCols.pk      !== -1) gRow[groupCols.pk]      = tx.PK;
-      if (groupCols.group   !== -1) gRow[groupCols.group]   = tx.GlobalGroupID;
-      if (groupCols.cleared !== -1) gRow[groupCols.cleared] = tx.Cleared;
-      if (groupCols.fy      !== -1) gRow[groupCols.fy]      = tx.FY;
+    const groupsNewData = txsWithGlobalIds.map(tx => {
+      const mergedRowOffset = mergedTable.getRowOffset(tx.PK);
+      return groupTableLabels.map((label, colIdx) => {
+        switch (colIdx) {
+          case groupCols.pk:      return tx.PK;
+          case groupCols.group:   return tx.GlobalGroupID;
+          case groupCols.cleared: return tx.Cleared;
+          case groupCols.fy:      return tx.FY;
+          default:
+            if (mergedRowOffset !== undefined) {
+              const mergedColOffset = mergedTable.getColOffset(label);
+              if (mergedColOffset !== -1) {
+                return mergedTable.get(mergedRowOffset, mergedColOffset);
+              }
+            }
+            return "";
+        }
+      });
+    });
 
-      // Copy matching lookup columns dynamically from Merged (e.g. Amount, EntryType, Date, Customer, Description)
-      if (mRowOff !== undefined) {
-        groupsTable.getLabels().forEach((label, colIdx) => {
-          const labelUpper = label.toUpperCase();
-          if (["PK", "GROUP", "CLEARED", "FY"].includes(labelUpper)) return;
+    if (groupCols.group !== -1 && groupsNewData.length > 0) {
+      groupsNewData.sort((a, b) => Number(a[groupCols.group] || 0) - Number(b[groupCols.group] || 0));
+    }
+    return groupsNewData;
+  }
 
-          const mergedColOff = mergedTable.getColOffset(label);
-          if (mergedColOff !== -1) {
-            gRow[colIdx] = mergedTable.get(mRowOff, mergedColOff);
-          }
-        });
+  /**
+   * Accumulates Google Sheets A1 notations into batches for bulk updating the Merged sheet.
+   * This minimizes slow cell-by-cell API calls by grouping updates by value.
+   * 
+   * @param {Array} txsWithGlobalIds - Array of enriched transaction objects
+   * @param {Table} mergedTable
+   * @returns {{ clearedOffsets: number[], groupsOffsetsByVal: Map<number, number[]>, fyOffsetsByVal: Map<string, number[]> }}
+   */
+  _buildMergedTableBatchUpdates(txsWithGlobalIds, mergedTable) {
+    return txsWithGlobalIds.reduce((groupedOffsets, tx) => {
+      const mergedRowOffset = mergedTable.getRowOffset(tx.PK);
+      if (mergedRowOffset !== undefined) {
+        // Every balanced transaction gets its 'Cleared' checkbox set to TRUE in the Merged sheet.
+        groupedOffsets.clearedOffsets.push(mergedRowOffset);
+        
+        const groupsExistingOffsets = groupedOffsets.groupsOffsetsByVal.get(tx.GlobalGroupID) || [];
+        groupedOffsets.groupsOffsetsByVal.set(tx.GlobalGroupID, [...groupsExistingOffsets, mergedRowOffset]);
+
+        if (tx.FY) {
+          const fyExistingOffsets = groupedOffsets.fyOffsetsByVal.get(tx.FY) || [];
+          groupedOffsets.fyOffsetsByVal.set(tx.FY, [...fyExistingOffsets, mergedRowOffset]);
+        }
       }
-      groupsNewData.push(gRow);
+      return groupedOffsets;
+    }, {
+      clearedOffsets: [],
+      groupsOffsetsByVal: new Map(),
+      fyOffsetsByVal: new Map()
+    });
+  }
 
-      // B. Collect A1 notations for batched updates to Merged instead of writing cell-by-cell
-      if (mRowOff !== undefined) {
-        const pRow = mRowOff + mergedTable.firstDataRowIndex;
-        if (mergedCols.cleared !== -1) {
-          const colLetter = StringUtils.columnToLetter(mergedCols.cleared);
-          mergedClearedA1List.push(`${colLetter}${pRow}`);
-        }
-        if (mergedCols.group !== -1) {
-          const colLetter = StringUtils.columnToLetter(mergedCols.group);
-          const a1 = `${colLetter}${pRow}`;
-          if (!mergedGroupsA1ByVal.has(tx.GlobalGroupID)) {
-            mergedGroupsA1ByVal.set(tx.GlobalGroupID, []);
-          }
-          mergedGroupsA1ByVal.get(tx.GlobalGroupID).push(a1);
-        }
-        if (mergedCols.fy !== -1 && tx.FY) {
-          const colLetter = StringUtils.columnToLetter(mergedCols.fy);
-          const a1 = `${colLetter}${pRow}`;
-          if (!mergedFYA1ByVal.has(tx.FY)) {
-            mergedFYA1ByVal.set(tx.FY, []);
-          }
-          mergedFYA1ByVal.get(tx.FY).push(a1);
-        }
-      }
+  /**
+   * Generates a 2D array of log rows intended for the ReconcileLog table.
+   * Each row records the reconciliation event for a single transaction.
+   * 
+   * @param {Array} txsWithGlobalIds - Array of enriched transaction objects
+   * @param {UpdateTable} logTable
+   * @returns {Array<Array<any>>} The newly generated log rows ready for persistence
+   */
+  _buildReconcileLogRows(txsWithGlobalIds, logTable) {
+    const logCols = logTable.getSymbolicOffsets();
+    const labelsLength = logTable.getLabels().length;
 
-      // C. Stage row for ReconcileLog
+    return txsWithGlobalIds.reduce((logs, tx) => {
       const prefixMatch = tx.PK.match(/^([^#]+)#/);
       if (prefixMatch) {
         const ledgerName = this._getLedgerNameFromPrefix(prefixMatch[1]);
         if (ledgerName) {
-          const logRow = new Array(logTable.getLabels().length).fill("");
+          const logRow = new Array(labelsLength).fill("");
           if (logCols.sheetName     !== -1) logRow[logCols.sheetName]     = ledgerName;
           if (logCols.transactionId !== -1) logRow[logCols.transactionId] = tx.PK;
           if (logCols.groupId       !== -1) logRow[logCols.groupId]       = tx.GlobalGroupID;
           if (logCols.clearStatus   !== -1) logRow[logCols.clearStatus]   = true;
-          logNewData.push(logRow);
+          logs.push(logRow);
         }
       }
-    });
-
-    // Execute the batched updates to Merged outside the loop
-    if (mergedClearedA1List.length > 0) {
-      mergedTable.sheet.getRangeList(mergedClearedA1List).setValue(true);
-    }
-    mergedGroupsA1ByVal.forEach((a1List, groupId) => {
-      mergedTable.sheet.getRangeList(a1List).setValue(groupId);
-    });
-    mergedFYA1ByVal.forEach((a1List, fyVal) => {
-      mergedTable.sheet.getRangeList(a1List).setValue(fyVal);
-    });
-
-    // Optimized: Sort the staged rows by Group ID in ascending order so that
-    // the sheet remains sorted by Group ID when they are written.
-    if (groupCols.group !== -1 && groupsNewData.length > 0) {
-      groupsNewData.sort((a, b) => Number(a[groupCols.group] || 0) - Number(b[groupCols.group] || 0));
-    }
-
-    return { groupsNewData, logNewData };
+      return logs;
+    }, []);
   }
 
   /**
-   * Writes Group & Cleared back to the originating ledger sheet for each balanced transaction.
-   * Groups transactions by ledger to avoid redundant fetches.
-   * Fails hard on any miss — these are the source ledgers; everything must resolve cleanly.
-   * @param {Array} balancedTxs
+   * Executes the accumulated batch updates against the Merged sheet using the Logical Layer.
+   * Applies the 'cleared' boolean, group IDs, and FY values in bulk without touching A1 addresses directly.
+   * 
+   * @param {Table} mergedTable
+   * @param {Object} batchUpdates - The accumulated row offset batches
    */
-  _writeBackToLedgers(balancedTxs) {
-    const txsByLedger = new Map();
-    balancedTxs.forEach(tx => {
-      const prefixMatch = tx.PK.match(/^([^#]+)#/);
-      if (!prefixMatch) {
-        throw new Error(`CRITICAL: Cannot resolve ledger prefix from PK '${tx.PK}'. PK format is invalid.`);
-      }
-      const ledgerName = this._getLedgerNameFromPrefix(prefixMatch[1]);
-      if (!ledgerName) {
-        throw new Error(`CRITICAL: Cannot resolve ledger name from prefix '${prefixMatch[1]}' (PK: '${tx.PK}'). Check SourceSheets config for AnnualSummaries_Merged.`);
-      }
-      if (!txsByLedger.has(ledgerName)) txsByLedger.set(ledgerName, []);
-      txsByLedger.get(ledgerName).push(tx);
+  _executeMergedTableBatchUpdates(mergedTable, batchUpdates) {
+    if (batchUpdates.clearedOffsets.length > 0) {
+      mergedTable.setBatchedValuesByLabel("Cleared", true, batchUpdates.clearedOffsets);
+    }
+    batchUpdates.groupsOffsetsByVal.forEach((offsets, groupId) => {
+      mergedTable.setBatchedValuesByLabel("Group", groupId, offsets);
     });
-
-    txsByLedger.forEach((txList, ledgerName) => {
-      const ledger = getSheetInstance(ledgerName);
-      ledger.fetchWindow();     // Ensures _window is populated for non-UpdateTable ledgers
-      ledger.buildHashKeyMap(); // UpdateTable: efficient single-column scan; others: uses window
-
-      const groupOff = ledger.getColOffset("Group");
-      const fyOff    = ledger.getColOffset("FY");
-
-      if (groupOff === -1) throw new Error(`CRITICAL: Ledger '${ledgerName}' has no 'Group' column. Cannot write back reconciliation group ID.`);
-
-      // Group A1 cell coordinates by GlobalGroupID / FY value for RangeList batch writes
-      const a1ByGroupId = new Map();
-      const a1ByFYValue = new Map();
-
-      txList.forEach(tx => {
-        const rowOff = ledger.getRowOffset(tx.PK);
-        if (rowOff === undefined) {
-          throw new Error(`CRITICAL: Ledger write-back failed. PK '${tx.PK}' not found in '${ledgerName}'. Data integrity error — this row was reconciled from this ledger.`);
-        }
-        const pRow = rowOff + ledger.firstDataRowIndex;
-        
-        // Group ID write-back
-        const colLetter = StringUtils.columnToLetter(groupOff);
-        const a1 = `${colLetter}${pRow}`;
-        if (!a1ByGroupId.has(tx.GlobalGroupID)) {
-          a1ByGroupId.set(tx.GlobalGroupID, []);
-        }
-        a1ByGroupId.get(tx.GlobalGroupID).push(a1);
-
-        // FY write-back (if exists and has value)
-        if (fyOff !== -1 && tx.FY) {
-          const fyColLetter = StringUtils.columnToLetter(fyOff);
-          const fyA1 = `${fyColLetter}${pRow}`;
-          if (!a1ByFYValue.has(tx.FY)) {
-            a1ByFYValue.set(tx.FY, []);
-          }
-          a1ByFYValue.get(tx.FY).push(fyA1);
-        }
-      });
-
-      // Write GlobalGroupIDs in batches using RangeList
-      a1ByGroupId.forEach((a1List, groupId) => {
-        ledger.sheet.getRangeList(a1List).setValue(groupId);
-      });
-
-      // Write FY values in batches using RangeList
-      a1ByFYValue.forEach((a1List, fyValue) => {
-        ledger.sheet.getRangeList(a1List).setValue(fyValue);
-      });
-
-      myLog("info", "Wrote Group (and FY if applicable) back to %d row(s) in ledger %s.", txList.length, ledgerName);
+    batchUpdates.fyOffsetsByVal.forEach((offsets, fyVal) => {
+      mergedTable.setBatchedValuesByLabel("FY", fyVal, offsets);
     });
   }
+
+
 
 
   /**

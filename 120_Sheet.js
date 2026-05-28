@@ -125,6 +125,17 @@ class Sheet {
   }
 
   /**
+   * Applies a single value to a disjoint batch of cells in a specific column.
+   * Translates 0-indexed relative row offsets into physical A1 notations.
+   */
+  setBatchedValuesInColumn(colOffset, value, rowOffsetsArray) {
+    if (!this.sheet || !rowOffsetsArray || rowOffsetsArray.length === 0) return;
+    const colLetter = StringUtils.columnToLetter(colOffset);
+    const a1List = rowOffsetsArray.map(off => `${colLetter}${this.firstDataRowIndex + off}`);
+    this.sheet.getRangeList(a1List).setValue(value);
+  }
+
+  /**
    * Fetches data into the private matrix. 
    * Supports incremental expansion (backward and forward).
    * @param {number} [startRow] Physical row to start from (default: firstDataRowIndex)

@@ -70,42 +70,60 @@ class ReconcileTable extends ReconcileProcessor {
    * @returns {Map<string, string>} PK -> Transaction ID
    */
   _loadExistingManualTxIds() {
-    const reconcileCols = this.getSymbolicOffsets();
-    const existingTxMap = new Map();
+    const { pk, transaction: txId } = this.getSymbolicOffsets();
 
-    if (reconcileCols.pk !== -1 && reconcileCols.transaction !== -1) {
-      this.getWindow().forEach(row => {
-        const pk = row[reconcileCols.pk];
-        const tx = row[reconcileCols.transaction];
-        if (pk && tx) existingTxMap.set(pk, String(tx).trim());
-      });
+    // Guard clause: If columns aren't valid, throw an error
+    if (pk === -1 || txId === -1) {
+      throw new Error("CRITICAL CONFIG ERROR: Required columns 'pk' or 'transaction' missing in Reconcile sheet.");
     }
-    return existingTxMap;
+
+    // Functional pipeline: Map rows to pairs, filter out invalids, format, and construct the Map
+    return new Map(
+      this.getWindow()
+        .map(row => [row[pk], row[txId]])
+        .filter(([id, tx]) => id && tx)
+        .map(([id, tx]) => [id, String(tx).trim()])
+    );
   }
 
   /**
-   * Identifies the best representative for each group (preferring ACCOUNT rows)
-   * and attaches it to the rootRow property of each transaction row.
+   * Groups rows by their Union-Find root index, then identifies the best 
+   * representative row for each group (preferring 'ACCOUNT' entries).
+   * The chosen representative is attached to the `rootRow` property of every row in that group.
+   *
+   * @param {Array<Object>} unreconciledRows - Array of row objects to process.
+   * @param {Array<number>} parentMap - Union-Find parent array where index is row index and value is parent index.
    */
   _resolveGroupRepresentatives(unreconciledRows, parentMap) {
-    const rootToRowsMap = new Map();
-    unreconciledRows.forEach((row, i) => {
+    // rootToRowsMap maps a Union-Find root index to an array of all row objects belonging to that connected group.
+    const rootToRowsMap = unreconciledRows.reduce((groupMap, row, i) => {
+      // Find the ultimate parent (root) index for the current row using Union-Find.
+      // All connected rows in the same transaction group will resolve to the exact same rootIdx.
       const rootIdx = this.root(i, parentMap);
-      if (!rootToRowsMap.has(rootIdx)) {
-        rootToRowsMap.set(rootIdx, []);
+      const existing = groupMap.get(rootIdx);
+      if (!existing) {
+        groupMap.set(rootIdx, [row]);
+      } else {
+        existing.push(row);
       }
-      rootToRowsMap.get(rootIdx).push(row);
-    });
+      return groupMap;
+    }, new Map());
 
-    const rootToRepMap = new Map();
-    rootToRowsMap.forEach((rows, rootIdx) => {
-      const accountRow = rows.find(r => r.entryType === "ACCOUNT");
-      rootToRepMap.set(rootIdx, accountRow || unreconciledRows[rootIdx]);
-    });
+    // rootToRepMap maps a root index to its single designated representative row.
+    // Determine the representative for each connected group.
+    const rootToRepMap = new Map(
+      Array.from(rootToRowsMap.entries()).map(([rootIdx, rows]) => {
+        const accountRow = rows.find(r => r.entryType === "ACCOUNT");
+        // Yield a [key, value] pair for the Map constructor. The value defaults to the raw root row if no ACCOUNT row exists.
+        return [rootIdx, accountRow || unreconciledRows[rootIdx]];
+      })
+    );
 
-    unreconciledRows.forEach((row, i) => {
+    // Map over unreconciledRows to attach the chosen representative to each row
+    unreconciledRows.map((row, i) => {
       const rootIdx = this.root(i, parentMap);
       row.rootRow = rootToRepMap.get(rootIdx);
+      return row;
     });
   }
 
@@ -133,32 +151,45 @@ class ReconcileTable extends ReconcileProcessor {
     this.getWindow();
 
     // 1. Identify which rows are balanced and collect their data
-    const { balancedTxs, rowsToDelete } = this._collectBalancedTransactions();
+    const { balancedTxs } = this._collectBalancedTransactions();
     if (balancedTxs.length === 0) {
       myLog("info", "No balanced rows found to process.");
       return;
     }
 
+    // ==========================================
+    // PHASE 1: PREPARATION & VALIDATION (No mutations)
+    // ==========================================
     // 2. Pre-fetch all destination tables BEFORE any mutations
     const { groupsTable, mergedTable, logTable } = this._prefetchDestinationTables();
 
-    // 3. Assign global group IDs, stage Groups/Log rows, update Merged cells
-    const { groupsNewData, logNewData } = this._stageAndApplyGroupUpdates(balancedTxs, groupsTable, mergedTable, logTable);
+    // 3. Stage updates for Merged, Groups, and Log tables
+    const { groupsNewData, logNewData, mergedBatches } = this._stageGroupUpdates(balancedTxs, groupsTable, mergedTable, logTable);
 
-    // 4. Write Group & Cleared back to the originating ledger sheets
-    this._writeBackToLedgers(balancedTxs);
+    // 4. Stage updates for originating Ledgers
+    const ledgerBatches = this._stageLedgerUpdates(balancedTxs);
+
+    // ==========================================
+    // PHASE 2: COMMIT (Write-Only)
+    // ==========================================
+    // If execution reaches here, all logic and lookup validations have passed.
+    
+    this._executeMergedTableBatchUpdates(mergedTable, mergedBatches);
+    this._executeLedgerBatchUpdates(ledgerBatches);
 
     // 5. Persist staged rows to Groups and ReconcileLog
-    if (typeof groupsTable.persist !== "function") {
-      throw new Error(`CRITICAL CONFIG ERROR: AnnualSummaries_Groups must be configured as an UpdateTable in NewAccounts_Sheets (SheetType=UpdateTable) to persist ${groupsNewData.length} group rows. Current type does not support persist().`);
+    try {
+      groupsTable.persist(groupsNewData, "add");
+    } catch (e) {
+      throw new Error(`CRITICAL CONFIG ERROR: AnnualSummaries_Groups failed to persist. Ensure it is configured as an UpdateTable. Original error: ${e.message}`);
     }
-    groupsTable.persist(groupsNewData, "add");
 
     if (logNewData.length > 0) {
-      if (typeof logTable.persist !== "function") {
-        throw new Error(`CRITICAL CONFIG ERROR: NewAccounts_ReconcileLog must be configured as an UpdateTable in NewAccounts_Sheets (SheetType=UpdateTable) to persist ${logNewData.length} logs. Current type does not support persist().`);
+      try {
+        logTable.persist(logNewData, "add");
+      } catch (e) {
+        throw new Error(`CRITICAL CONFIG ERROR: NewAccounts_ReconcileLog failed to persist. Ensure it is configured as an UpdateTable. Original error: ${e.message}`);
       }
-      logTable.persist(logNewData, "add");
     } else {
       myLog("warn", "No rows staged for ReconcileLog. ColLabels length: %d", logTable.getLabels().length);
     }
@@ -172,6 +203,84 @@ class ReconcileTable extends ReconcileProcessor {
     this.startNewReconciliation();
 
     myLog("info", "Processed %d balanced rows successfully.", balancedTxs.length);
+  }
+
+  /**
+   * Builds batch update payloads for originating ledger sheets.
+   * Fails hard on any miss — these are the source ledgers; everything must resolve cleanly.
+   * 
+   * @param {Array} balancedTxs
+   * @returns {Map<string, { groupOffsetsByVal: Map<number, number[]>, fyOffsetsByVal: Map<string, number[]> }>}
+   */
+  _stageLedgerUpdates(balancedTxs) {
+    const txsByLedger = new Map();
+    balancedTxs.forEach(tx => {
+      const prefixMatch = tx.PK.match(/^([^#]+)#/);
+      if (!prefixMatch) {
+        throw new Error(`CRITICAL: Cannot resolve ledger prefix from PK '${tx.PK}'. PK format is invalid.`);
+      }
+      const ledgerName = this._getLedgerNameFromPrefix(prefixMatch[1]);
+      if (!ledgerName) {
+        throw new Error(`CRITICAL: Cannot resolve ledger name from prefix '${prefixMatch[1]}' (PK: '${tx.PK}'). Check SourceSheets config for AnnualSummaries_Merged.`);
+      }
+      if (!txsByLedger.has(ledgerName)) txsByLedger.set(ledgerName, []);
+      txsByLedger.get(ledgerName).push(tx);
+    });
+
+    const ledgerBatches = new Map();
+
+    txsByLedger.forEach((txList, ledgerName) => {
+      const ledger = getSheetInstance(ledgerName);
+
+      if (ledger.getColOffset("Group") === -1) {
+        throw new Error(`CRITICAL: Ledger '${ledgerName}' has no 'Group' column. Cannot write back reconciliation group ID.`);
+      }
+
+      // Group relative row offsets by target value for logical batch writes
+      const groupOffsetsByVal = new Map();
+      const fyOffsetsByVal = new Map();
+
+      txList.forEach(tx => {
+        const rowOff = ledger.getRowOffset(tx.PK);
+        if (rowOff === undefined) {
+          throw new Error(`CRITICAL: Ledger write-back failed. PK '${tx.PK}' not found in '${ledgerName}'. Data integrity error — this row was reconciled from this ledger.`);
+        }
+        
+        // Group ID offsets
+        const groupsExistingOffsets = groupOffsetsByVal.get(tx.GlobalGroupID) || [];
+        groupOffsetsByVal.set(tx.GlobalGroupID, [...groupsExistingOffsets, rowOff]);
+
+        // FY offsets (if exists and has value)
+        if (tx.FY) {
+          const fyExistingOffsets = fyOffsetsByVal.get(tx.FY) || [];
+          fyOffsetsByVal.set(tx.FY, [...fyExistingOffsets, rowOff]);
+        }
+      });
+
+      ledgerBatches.set(ledgerName, { groupOffsetsByVal, fyOffsetsByVal });
+    });
+
+    return ledgerBatches;
+  }
+
+  /**
+   * Executes the accumulated batch updates against the source ledgers.
+   * 
+   * @param {Map<string, Object>} ledgerBatches 
+   */
+  _executeLedgerBatchUpdates(ledgerBatches) {
+    ledgerBatches.forEach((batches, ledgerName) => {
+      const ledger = getSheetInstance(ledgerName);
+
+      batches.groupOffsetsByVal.forEach((offsets, groupId) => {
+        ledger.setBatchedValuesByLabel("Group", groupId, offsets);
+      });
+      batches.fyOffsetsByVal.forEach((offsets, fyVal) => {
+        ledger.setBatchedValuesByLabel("FY", fyVal, offsets);
+      });
+
+      myLog("info", "Wrote Group (and FY if applicable) back to ledger %s.", ledgerName);
+    });
   }
 
   /**

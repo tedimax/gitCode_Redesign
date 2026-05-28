@@ -224,6 +224,16 @@ class Table extends Sheet {
   }
 
   /**
+   * Bulk updates disjoint cells by column label using relative row offsets.
+   */
+  setBatchedValuesByLabel(label, value, rowOffsetsArray) {
+    const colOffset = this.getColOffset(label);
+    if (colOffset !== -1) {
+      this.setBatchedValuesInColumn(colOffset, value, rowOffsetsArray);
+    }
+  }
+
+  /**
    * Converts a window row into a JavaScript object.
    * Functional Pattern: .reduce() over columnMap.
    */
