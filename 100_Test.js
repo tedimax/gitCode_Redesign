@@ -205,3 +205,90 @@ function dumpAllFormulas() {
   }
 }
 
+function debugBookingsFormulas() {
+  initialize();
+  myLog("info", "=== debugBookingsFormulas ===");
+  try {
+    const config = Registry.getSheetConfig("Ledgers_Bookings");
+    myLog("info", "Ledgers_Bookings config properties: %s", JSON.stringify(config));
+    
+    const formulas = Registry.getFormulasFor("Ledgers_Bookings");
+    myLog("info", "Ledgers_Bookings formulas count: %d", formulas.length);
+    formulas.forEach(f => {
+      myLog("info", "  Field: %s | Formula: %s", f.targetField, f.formula);
+    });
+  } catch (e) {
+    myLog("error", "Error: %s", e.message);
+  }
+}
+
+function debugBookingsWindow() {
+  initialize();
+  myLog("info", "=== debugBookingsWindow ===");
+  try {
+    const bookingsConfig = Registry.getSheetConfig("Ledgers_Bookings");
+    myLog("info", "Ledgers_Bookings Config: %s", JSON.stringify(bookingsConfig));
+
+    const rawSMAppConfig = Registry.getSheetConfig("ImportsArchive_RawSMApp");
+    myLog("info", "ImportsArchive_RawSMApp Config: %s", JSON.stringify(rawSMAppConfig));
+
+    const rawSMAppTable = Utils.getSheetInstance("ImportsArchive_RawSMApp");
+    const rawSMAppSheet = rawSMAppTable.sheet;
+    const rawSMAppLastRow = rawSMAppSheet.getLastRow();
+    myLog("info", "ImportsArchive_RawSMApp - Sheet range check: FirstRow config is %d. Total physical rows: %d.", 
+      rawSMAppTable.firstDataRowIndex, rawSMAppLastRow);
+
+    const appDateCol = rawSMAppTable.getColOffset("Appointment date");
+    myLog("info", "ImportsArchive_RawSMApp - 'Appointment date' col offset: %d", appDateCol);
+
+    if (appDateCol !== -1) {
+      const allDates = rawSMAppSheet.getRange(2, appDateCol + 1, rawSMAppLastRow - 1, 1).getValues();
+      let foundCount = 0;
+      allDates.forEach((valArr, idx) => {
+        const val = valArr[0];
+        const rowNum = idx + 2;
+        let d = null;
+        if (val instanceof Date) d = val;
+        else if (val) d = new Date(val);
+        
+        if (d && !isNaN(d.getTime())) {
+          const dateStr = d.toISOString().split('T')[0];
+          if (dateStr.startsWith("2025-03-14") || dateStr.startsWith("2025-03-15") || dateStr.startsWith("2025-03-13")) {
+            myLog("info", "Found date row: Physical Row %d, Date: %s (Raw: %s)", rowNum, dateStr, String(val));
+            foundCount++;
+          }
+        }
+      });
+      myLog("info", "Search complete. Found %d matching date rows in raw sheet.", foundCount);
+    }
+  } catch (e) {
+    myLog("error", "Error: %s", e.message);
+  }
+}
+
+function debugRawRowDetail() {
+  initialize();
+  myLog("info", "=== debugRawRowDetail ===");
+  try {
+    const rawSMAppTable = Utils.getSheetInstance("ImportsArchive_RawSMApp");
+    const labels = rawSMAppTable.getLabels();
+    myLog("info", "RawSMApp Labels: %s", JSON.stringify(labels));
+
+    const rows = [1320, 1321, 1322, 1323, 1324];
+    rows.forEach(pRow => {
+      if (pRow <= rawSMAppTable.sheet.getLastRow()) {
+        const rowValues = rawSMAppTable.sheet.getRange(pRow, 1, 1, labels.length).getValues()[0];
+        const rowObj = labels.reduce((obj, label, idx) => {
+          obj[label] = rowValues[idx];
+          return obj;
+        }, {});
+        myLog("info", "Row %d: %s", pRow, JSON.stringify(rowObj));
+      }
+    });
+  } catch (e) {
+    myLog("error", "Error: %s", e.message);
+  }
+}
+
+
+

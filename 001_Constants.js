@@ -5,7 +5,7 @@
  * All system-wide fixed values go here.
  */
 const CONFIG_CONSTANTS = {
-  VERSION: "v1.1.13-debug",
+  VERSION: "v1.1.18-debug",
   ANCHOR_SSID: "13Uv4dP6fSnEyrU1GXvKvgKziLakeuWTjXOZiyNpFlPU", // NewAccounts SSID
   SHEETS_CONFIG_NAME: "NewAccounts_Sheets",
   DATATYPES_SHEET_NAME: "NewAccounts_DataTypes",
@@ -19,7 +19,8 @@ const CONFIG_CONSTANTS = {
   DEFAULT_LABEL_ROW: 1,
   DEFAULT_TIMEZONE: "Europe/London",
   DECIMAL_PRECISION: 2,
-  FUZZY_NUMERIC_THRESHOLD: 0.005,
+  FUZZY_NUMERIC_THRESHOLD: 1e-6,
+  FUZZY_BALANCE_THRESHOLD: 0.005,
   HASH_PREFIX: "#",
   RANGE_NAME_REGEX: /[^a-zA-Z0-9_]/g,
   USE_NATIVE_DATES_FOR_SHEET: true, // Toggle between true (Native Date) and false (ISO String)

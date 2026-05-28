@@ -29,7 +29,9 @@ const PatchManager = (() => {
           }
 
           if (!_patches.has(tableName)) _patches.set(tableName, new Map());
-          _patches.get(tableName).set(String(pk).trim().toLowerCase(), JSON.parse(patchJson));
+          const patchObj = JSON.parse(patchJson);
+          patchObj._originalPK = String(pk).trim();
+          _patches.get(tableName).set(String(pk).trim().toLowerCase(), patchObj);
         } catch (e) {
           throw new Error(`Bootstrap Failure: PatchManager failed to parse JSON patch for '${globalId}': ${e.message}`);
         }
@@ -61,7 +63,7 @@ const PatchManager = (() => {
       tablePatches.forEach((patch, pk) => {
         if (!patch._isConsumed) {
           // Ensure the PK is part of the object so the Table logic can see it
-          unused.push({ ...patch, PK: pk });
+          unused.push({ ...patch, PK: patch._originalPK || pk });
         }
       });
       return unused;

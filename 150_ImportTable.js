@@ -168,7 +168,58 @@ class ImportTable extends UpdateTable {
 
         if (withinWindow.length > 0) {
           myLog("info", "Injecting %d new manual entries (Ghost Rows) for %s", withinWindow.length, this.longName);
-          withinWindow.forEach(ghost => targetObjects.push(ghost));
+          const labels = this.getLabels();
+          
+          // Build a set of all keys in the full sheet to check for existence outside the window
+          const fullSheetKeys = new Set();
+          if (this.sheet) {
+            this._initializeKeyMetadata();
+            const keyMetadata = this._keyMetadata;
+            const lastRow = this.sheet.getLastRow();
+            const labelRow = Number(this.getProperty("LabelRow")) || 1;
+            const startRow = labelRow + 1;
+            if (lastRow >= startRow) {
+              if (keyMetadata.type === "single") {
+                const keyCol = keyMetadata.offset + 1;
+                const values = this.sheet.getRange(startRow, keyCol, lastRow - startRow + 1, 1).getValues();
+                values.forEach(valArr => {
+                  const rawVal = valArr[0];
+                  if (rawVal !== undefined && rawVal !== "") {
+                    const key = String(TypeUtils.castType(rawVal, keyMetadata.fieldType) || "").trim().toLowerCase();
+                    if (key) fullSheetKeys.add(key);
+                  }
+                });
+              } else {
+                const lastCol = this.sheet.getLastColumn();
+                const fullData = this.sheet.getRange(startRow, 1, lastRow - startRow + 1, lastCol).getValues();
+                fullData.forEach(row => {
+                  const key = this.getRowKey(row);
+                  if (key) fullSheetKeys.add(key.toLowerCase());
+                });
+              }
+            }
+          }
+
+          withinWindow.forEach(ghost => {
+            const ghostPKLower = String(ghost.PK).trim().toLowerCase();
+            const existingRowOff = this.getHashKeyMap().get(ghostPKLower);
+            
+            if (existingRowOff !== undefined) {
+              const existingRowArray = this.getWindow()[existingRowOff];
+              const existingObj = labels.reduce((obj, label, colOff) => {
+                obj[label] = existingRowArray[colOff];
+                return obj;
+              }, {});
+              const mergedObj = Object.assign({}, existingObj, ghost);
+              targetObjects.push(mergedObj);
+            } else if (fullSheetKeys.has(ghostPKLower)) {
+              // Row already exists in the sheet outside the current target window: skip to avoid duplicates/blanks
+              myLog("info", "ImportTable [Ghost Injection]: Skipped ghost entry PK '%s' because it already exists in the sheet outside the target window.", ghost.PK);
+            } else {
+              // Truly new manual entry: inject it
+              targetObjects.push(ghost);
+            }
+          });
         }
       }
     }

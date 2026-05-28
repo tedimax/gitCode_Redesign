@@ -61,6 +61,7 @@ function _importNamedSheet(longName, forceUpdate = false) {
   } catch (e) {
     myLog("error", "Failed to import sheet %s: %s", longName, e.message);
     SpreadsheetApp.getUi().alert(`Import Error [${longName}]: ${e.message}`);
+    throw e; // Rethrow to propagate failure and terminate the run!
   }
 }
 

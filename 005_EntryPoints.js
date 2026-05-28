@@ -317,6 +317,7 @@ function setAllWindows() {
       if (longName) {
         const isWindowed = longName.startsWith("Ledgers_") 
                         || longName.startsWith("ManualEntry_")
+                        || longName.startsWith("ImportsArchive_Raw")
                         || longName === "AnnualSummaries_Merged"
                         || longName === "AnnualSummaries_UnChecked"
                         || longName === "AnnualSummaries_Groups";
@@ -332,6 +333,7 @@ function setAllWindows() {
       const longName = item.longName;
       const isWindowed = longName.startsWith("Ledgers_") 
                       || longName.startsWith("ManualEntry_")
+                      || longName.startsWith("ImportsArchive_Raw")
                       || longName === "AnnualSummaries_Merged"
                       || longName === "AnnualSummaries_UnChecked"
                       || longName === "AnnualSummaries_Groups";
