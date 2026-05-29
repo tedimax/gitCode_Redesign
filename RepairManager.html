@@ -346,7 +346,7 @@
         });
       }
 
-      function runRepair() {
+      async function runRepair() {
         const checkboxes = document.querySelectorAll('#sheetList input[type="checkbox"]:checked');
         const selected = Array.from(checkboxes).map(cb => cb.value);
         
@@ -360,17 +360,53 @@
 
         runBtn.disabled = true;
         status.style.display = 'block';
+        
+        let hasError = false;
 
-        google.script.run
-          .withSuccessHandler(() => {
-            google.script.host.close();
-          })
-          .withFailureHandler(err => {
-            alert('Repair Failed: ' + err.message);
-            runBtn.disabled = false;
-            status.style.display = 'none';
-          })
-          .runRepairBatch(selected, false); // Pass false so server processes exactly this list in topological order
+        for (const longName of selected) {
+          status.innerText = `Processing ${longName}...`;
+          
+          try {
+            await new Promise((resolve, reject) => {
+              google.script.run
+                .withSuccessHandler(resolve)
+                .withFailureHandler(reject)
+                .runRepairSingle(longName);
+            });
+            
+            // Success: Untick the checkbox
+            const chk = document.getElementById(`chk_${longName}`);
+            if (chk) chk.checked = false;
+            
+            // Remove from selected sets so it doesn't stay badged
+            userSelected.delete(longName);
+            userDeselected.delete(longName);
+            reevaluateUI();
+            
+          } catch (err) {
+            alert(`Repair Failed on ${longName}:\n\n` + err.message);
+            hasError = true;
+            break; // Stop processing further sheets
+          }
+        }
+        
+        runBtn.disabled = false;
+        
+        if (!hasError) {
+          status.innerText = 'Repair Complete!';
+          status.style.animation = 'none';
+          status.style.color = '#166534';
+          status.style.background = '#dcfce7';
+          status.style.borderColor = '#bbf7d0';
+          setTimeout(() => google.script.host.close(), 1000);
+        } else {
+          status.innerText = 'Repair interrupted.';
+          status.style.display = 'block';
+          status.style.animation = 'none';
+          status.style.color = '#dc2626';
+          status.style.background = '#fef2f2';
+          status.style.borderColor = '#fecaca';
+        }
       }
 
       function handleError(err) {

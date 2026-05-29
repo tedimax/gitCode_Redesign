@@ -68,20 +68,6 @@ const Utils = (() => {
     // 1. Explicitly defined in Registry
     const explicitSource = tableInstance.getProperty("SourceSheets") || tableInstance.getProperty("SourceSheet");
     if (explicitSource) {
-      if (String(explicitSource).includes(",")) {
-        const UnionTableClass = globals.tableMap['UnionTable'];
-        if (!UnionTableClass) {
-          throw new Error(`UnionTable class is not registered yet while initializing ${tableInstance.longName}.`);
-        }
-        const instance = new UnionTableClass(tableInstance.ss, "Virtual_Union", { 
-          Sources: explicitSource, 
-          SheetType: "UnionTable", 
-          SheetName: "Virtual_Union" 
-        });
-        tableInstance._resolvedSourceSheet = instance;
-        return instance;
-      }
-      
       const instance = getSheetInstance(explicitSource);
       if (instance) {
         tableInstance._resolvedSourceSheet = instance;

@@ -11,10 +11,10 @@ class Sheet {
     this._window = [];
     
     // 1. Resolve Hybrid Config (Registry + Overrides)
-    let registryConfig = {};
+    let baseConfig = {};
     if (typeof Registry !== 'undefined') {
       try {
-        registryConfig = Registry.getSheetConfig(longName);
+        baseConfig = Registry.getSheetConfig(longName);
       } catch (e) {
         // Only throw if NO config was passed and it's not the bootstrap table
         if (!config && longName !== CONFIG_CONSTANTS.SHEETS_CONFIG_NAME) {
@@ -22,7 +22,7 @@ class Sheet {
         }
       }
     }
-    const rawConfig = Object.assign({}, registryConfig, config || {});
+    const rawConfig = Object.assign({}, baseConfig, config || {});
     
     // Standardize: Lowercase and Trim all property keys for O(1) lookup
     this._config = {};
@@ -40,18 +40,10 @@ class Sheet {
     this.sheetName = this._config.sheetname || sheetContext;
     this.sheet = ss.getSheetByName(this.sheetName);
     
-    const isVirtual = this._config.sheettype === 'FileTable' 
-                   || this._config.sheettype === 'InMemoryTable'
-                   || this._config.sheettype === 'UnionTable';
-    if (!this.sheet && !isVirtual) {
-      if (this._config.createifmissing) {
-        myLog("info", "Sheet: '%s' not found. Creating new sheet in spreadsheet %s.", this.sheetName, ss.getId());
-        this.sheet = ss.insertSheet(this.sheetName);
-      } else {
-        const ssid = ss.getId();
-        throw new Error(`Physical Sheet Missing: The physical Google Sheet named "${this.sheetName}" was not found inside the spreadsheet (ID: "${ssid}").\n\n` +
-          `👉 Action Required: Please verify that a sheet tab named "${this.sheetName}" exists in the target spreadsheet, or set 'CreateIfMissing' to TRUE in your 'NewAccounts_Sheets' Registry configuration.`);
-      }
+    if (!this.sheet) {
+      const ssid = ss.getId();
+      throw new Error(`Physical Sheet Missing: The physical Google Sheet named "${this.sheetName}" was not found inside the spreadsheet (ID: "${ssid}").\n\n` +
+        `👉 Action Required: Please verify that a sheet tab named "${this.sheetName}" exists in the target spreadsheet.`);
     }
 
     // Windows state

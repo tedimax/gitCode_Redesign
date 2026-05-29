@@ -389,34 +389,10 @@ function getSheetDependencyMap() {
 }
 
 /**
- * Server Function: Runs the repair batch for selected sheets.
+ * Server Function: Runs repair for a single sheet, suppressing server-side alerts so the client UI handles them.
  */
-function runRepairBatch(selectedLongNames, repairDependents) {
+function runRepairSingle(longName) {
   initialize();
-  myLog("info", "Repair: Starting batch repair for %d sheets (Dependents: %s)", selectedLongNames.length, repairDependents);
-  
-  try {
-    // 1. Expand dependencies if requested
-    let finalSet = selectedLongNames;
-    if (repairDependents) {
-      finalSet = _expandDependencies(selectedLongNames);
-      myLog("info", "Repair: Expanded selection to %d sheets based on dependencies.", finalSet.length);
-    }
-
-    // 2. Sort the final set by dependency order (Topological Sort)
-    const sortedSet = _sortSheetsByDependency(finalSet);
-    myLog("info", "Repair: Final execution order: %s", sortedSet.join(" -> "));
-
-    // 3. Process the batch synchronously
-    sortedSet.forEach(longName => {
-      myLog("info", "Repair: Processing %s...", longName);
-      _importNamedSheet(longName, true); // Force Update mode via Fluent API
-    });
-
-    myLog("info", "Repair: Batch reconciliation complete.");
-    SpreadsheetApp.getUi().alert(`Repair Batch Complete: Processed ${sortedSet.length} sheets in correct dependency order.`);
-  } catch (e) {
-    myLog("error", "Repair Batch Failure: %s", e.message);
-    SpreadsheetApp.getUi().alert("Repair Batch Failed: " + e.message);
-  }
+  myLog("info", "Repair: Processing single sheet %s...", longName);
+  _importNamedSheet(longName, true, true); // Force Update mode, Suppress Alerts
 }

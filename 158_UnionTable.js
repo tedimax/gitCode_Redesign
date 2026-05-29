@@ -14,17 +14,41 @@ class UnionTable extends Table {
   }
 
   /**
-   * Orchestration: Resolves all source table instances.
+   * Orchestration: Resolves all source table instances from the physical sheet.
    */
   _ensureSources() {
     if (this._isInitialized) return;
 
-    const sourcesRaw = this.getProperty("Sources");
-    if (!sourcesRaw) {
-      throw new Error(`UnionTable Failure: No 'Sources' defined in properties for ${this.longName}. Expected a comma-separated list of LongNames.`);
+    // 1. Fetch physical config data (bypassing overridden getWindow)
+    Sheet.prototype.fetch.call(this);
+    const configData = [...this._window]; 
+    this.clearCache(); // Reset so Union logic can take over this._window later
+
+    // 2. Fetch headers from physical sheet (Row 1)
+    const lastCol = this.sheet.getLastColumn();
+    if (lastCol === 0) {
+      throw new Error(`UnionTable Failure: The physical configuration sheet for ${this.longName} is completely empty.`);
+    }
+    const headers = this.sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const sourceColOffset = headers.findIndex(h => String(h).trim().toLowerCase() === "source");
+
+    if (sourceColOffset === -1) {
+      throw new Error(`UnionTable Failure: The physical configuration sheet for ${this.longName} is missing the required 'Source' column.`);
     }
 
-    const sourceNames = String(sourcesRaw).split(",").map(s => s.trim());
+    // 3. Extract source names
+    const sourceNames = [];
+    configData.forEach(row => {
+      const sourceName = row[sourceColOffset];
+      if (sourceName && String(sourceName).trim() !== "") {
+        sourceNames.push(String(sourceName).trim());
+      }
+    });
+
+    if (sourceNames.length === 0) {
+      throw new Error(`UnionTable Failure: No sources defined in the 'Source' column of ${this.longName}.`);
+    }
+
     let currentOffset = 0;
     this._sourceInstances = sourceNames.map(name => {
       const instance = getSheetInstance(name);
@@ -44,6 +68,7 @@ class UnionTable extends Table {
     });
 
     this._isInitialized = true;
+    this._labels = null; // Clear the physical ["Source"] label so getLabels() rebuilds the virtual schema
     
     // Calculate initial combined length for logging
     const totalRows = this._sourceInstances.reduce((sum, s) => sum + s.windowDataLength, 0);
@@ -81,10 +106,18 @@ class UnionTable extends Table {
       }
       
       // Map columns from source to union indices
-      const colMap = unionLabels.map(label => source.getColOffset(label));
+      const colMap = unionLabels.map(label => {
+        if (label === "Source") return -2;
+        if (label === "PK") return -3;
+        return source.getColOffset(label);
+      });
       
       const alignedWindow = sourceWindow.map(row => {
-        return colMap.map(offset => (offset !== -1 ? row[offset] : ""));
+        return colMap.map(offset => {
+          if (offset === -2) return source.longName;
+          if (offset === -3) return source.getRowKey(row) || "";
+          return offset !== -1 ? row[offset] : "";
+        });
       });
       
       return acc.concat(alignedWindow);
@@ -114,6 +147,8 @@ class UnionTable extends Table {
     this._ensureSources();
     if (!this._labels || this._labels.length === 0) {
       const allLabels = new Set();
+      allLabels.add("Source");
+      allLabels.add("PK");
       this._sourceInstances.forEach(source => {
         const sourceLabels = source.getLabels();
         myLog("info", "UnionTable Source [%s] labels: %s", source.longName, JSON.stringify(sourceLabels));

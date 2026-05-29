@@ -27,7 +27,7 @@ function _getReconciliationInstance() {
  * @param {string} longName
  * @param {boolean} forceUpdate - If true, uses the Fluent API to force update mode.
  */
-function _importNamedSheet(longName, forceUpdate = false) {
+function _importNamedSheet(longName, forceUpdate = false, suppressAlerts = false) {
   initialize();
   myLog("info", "Importing sheet: %s (Force Update: %s)", longName, forceUpdate);
   
@@ -60,7 +60,7 @@ function _importNamedSheet(longName, forceUpdate = false) {
     }
   } catch (e) {
     myLog("error", "Failed to import sheet %s: %s", longName, e.message);
-    SpreadsheetApp.getUi().alert(`Import Error [${longName}]: ${e.message}`);
+    if (!suppressAlerts) SpreadsheetApp.getUi().alert(`Import Error [${longName}]: ${e.message}`);
     throw e; // Rethrow to propagate failure and terminate the run!
   }
 }
