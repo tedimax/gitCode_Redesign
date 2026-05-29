@@ -20,7 +20,7 @@ class UnionTable extends Table {
     if (this._isInitialized) return;
 
     // 1. Fetch physical config data (bypassing overridden getWindow)
-    Sheet.prototype.fetch.call(this);
+    Sheet.prototype.fetch.call(this, this.firstDataRowIndex);
     const configData = [...this._window]; 
     this.clearCache(); // Reset so Union logic can take over this._window later
 

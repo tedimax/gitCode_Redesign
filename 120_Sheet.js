@@ -53,6 +53,7 @@ class Sheet {
     this._isFetched = false;
     this._windowStartRow = null; // Physical row index of the first row in _window
     this._cachedLastRowIndex = null;
+    this._cachedLastCol = undefined;
     this._maxWrittenRow = 0;
   }
 
@@ -61,7 +62,7 @@ class Sheet {
    * Ensures data is loaded exactly once on demand.
    */
   getWindow() {
-    this.fetch();
+    this.fetch(this.firstDataRowIndex);
     return this._window;
   }
 
@@ -73,6 +74,7 @@ class Sheet {
     this._windowStartRow = null;
     this.windowDataLength = 0;
     this._isFetched = false;
+    this._cachedLastCol = undefined;
     myLog("trace", "Sheet %s: Cache cleared.", this.longName);
   }
 
@@ -135,32 +137,24 @@ class Sheet {
    */
   fetch(startRow, numRows) {
     try {
-      const isDefaultRequest = (startRow === undefined || startRow === null) && (numRows === undefined || numRows === null);
-
-      // 1. Lazy Guard (Skip if we already have the default full fetch window)
-      if (isDefaultRequest && this._isFetched) return;
-
-      // 2. Virtual Sheet Guard
-      if (!this.sheet) {
-        this._isFetched = true;
-        if (!this._windowStartRow) this._windowStartRow = this.firstDataRowIndex;
-        return;
-      }
-
       // 3. Resolve Requested Range
+      // Returns object: { start: number, numRows: number, lastCol: number }
       const range = this._resolveRequestedRange(startRow, numRows);
       if (range.numRows <= 0) return;
 
       // 4. Orchestrate Load
       if (!this._isFetched) {
         // Build the initial window
+        // Returns void (Mutates this._window and this._windowStartRow in-place)
         this._performInitialFetch(range);
       } else {
         // Expand the existing window perimeter
+        // Returns void (Mutates this._window in-place by prepending/appending arrays)
         this._expandWindow(range);
       }
 
       // 5. Cleanup
+      // Returns void (Mutates this._window in-place by popping trailing empty rows)
       this._trimTrailingRows();
       this._isFetched = true;
     } catch (e) {
@@ -173,16 +167,17 @@ class Sheet {
    */
   _resolveRequestedRange(startRow, numRows) {
     const resolvedStart = (startRow === undefined || startRow === null) ? this.firstDataRowIndex : startRow;
-    const physicalLastRow = this.sheet.getLastRow();
-    const maxRows = this.sheet.getMaxRows();
-    const registryLastRow = Number(this._config.lastrow) || 0;
-    const lastCol = this.sheet.getLastColumn();
-    const ssUrl = this.ss.getUrl();
     
-    myLog("trace", "Sheet [%s] Dimension Audit: startRow=%d, physicalLastRow=%d, maxRows=%d, ssUrl=%s", 
-      this.longName, resolvedStart, physicalLastRow, maxRows, ssUrl);
+    // Utilize the built-in lazy cache to prevent redundant API calls!
+    const physicalLastRow = this.getLastRowIndex(); 
+    
+    const lastCol = this.getLastColumnIndex();
     
     const count = (numRows === undefined || numRows === null) ? Math.max(0, physicalLastRow - resolvedStart + 1) : numRows;
+    
+    myLog("trace", "Sheet [%s] Dimension Audit: startRow=%d, physicalLastRow=%d", 
+      this.longName, resolvedStart, physicalLastRow);
+      
     return { start: resolvedStart, numRows: count, lastCol: lastCol };
   }
 
@@ -264,7 +259,7 @@ class Sheet {
     // Guard for virtual sheets
     if (!this.sheet) return this._maxWrittenRow || (this.firstDataRowIndex - 1);
 
-    const lastCol = this.sheet.getLastColumn();
+    const lastCol = this.getLastColumnIndex();
     const lastRow = this.sheet.getLastRow();
     
     if (lastCol === 0 || lastRow < this.firstDataRowIndex) {
@@ -281,6 +276,19 @@ class Sheet {
     // Convert 0-indexed array offset back to 1-indexed physical row
     this._cachedLastRowIndex = (lastIdx === -1) ? this.firstDataRowIndex - 1 : (this.firstDataRowIndex + lastIdx);
     return Math.max(this._cachedLastRowIndex, this._maxWrittenRow || 0);
+  }
+
+  /**
+   * Physical Column Resolver
+   * Returns the cached physical column index of the last column.
+   */
+  getLastColumnIndex() {
+    if (this._cachedLastCol !== undefined) {
+      return this._cachedLastCol;
+    }
+    if (!this.sheet) return 1;
+    this._cachedLastCol = this.sheet.getLastColumn();
+    return this._cachedLastCol;
   }
 
   /**
@@ -301,7 +309,7 @@ class Sheet {
   clearDataArea() {
     const lastRow = this.getLastRowIndex();
     if (lastRow >= this.firstDataRowIndex) {
-      this.sheet.getRange(this.firstDataRowIndex, 1, lastRow - this.firstDataRowIndex + 1, this.sheet.getLastColumn()).clearContent();
+      this.sheet.getRange(this.firstDataRowIndex, 1, lastRow - this.firstDataRowIndex + 1, this.getLastColumnIndex()).clearContent();
     }
     this._cachedLastRowIndex = this.firstDataRowIndex - 1;
     this._maxWrittenRow = 0;
@@ -356,6 +364,7 @@ class Sheet {
   flushMemory() {
     this._window = [];
     this._cachedLastRowIndex = null;
+    this._cachedLastCol = undefined;
     this._maxWrittenRow = 0;
     this._isFetched = false;
     this._windowStartRow = null;
@@ -369,7 +378,7 @@ class Sheet {
    * Uses StringUtils.toRangeName for strict sanitation.
    */
   writeNamedRanges() {
-    const labels = this.sheet.getRange(this._config.labelrow || 1, 1, 1, this.sheet.getLastColumn()).getValues()[0];
+    const labels = this.sheet.getRange(this._config.labelrow || 1, 1, 1, this.getLastColumnIndex()).getValues()[0];
     const sheetNameClean = StringUtils.toRangeName(this.sheetName);
     
     const physicalDataLength = Math.max(1, this.getLastRowIndex() - this.firstDataRowIndex + 1);

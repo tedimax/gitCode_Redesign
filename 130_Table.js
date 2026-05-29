@@ -354,7 +354,7 @@ class Table extends Sheet {
   }
 
   fetchWindow() {
-    this.fetch();
+    this.fetch(this.firstDataRowIndex);
   }
 
   /**
@@ -534,7 +534,7 @@ class Table extends Sheet {
     const cacheKey = `${keyCol}_${valCol}`;
     
     if (!this._lookupCacheMap.has(cacheKey)) {
-      this.fetch();
+      this.fetch(this.firstDataRowIndex);
       
       const keyOffset = this.getColOffset(keyCol);
       const valOffset = this.getColOffset(valCol);
