@@ -90,22 +90,12 @@ class Table extends Sheet {
         .filter(([label]) => label !== "")
     );
     
-    // 3. Fallback: If no labels found, try symbolic map from constants
-    if (this._columnMap.size === 0) {
-      const symbolicMap = TABLE_COLUMN_MAP[this.longName];
-      if (symbolicMap) {
-        myLog("trace", "Table %s: Using symbolic mapping from constants.", this.longName);
-        for (const symbol in symbolicMap) {
-          const literalHeader = symbolicMap[symbol];
-          if (!this._columnMap.has(literalHeader)) {
-             this._columnMap.set(literalHeader, Object.keys(symbolicMap).indexOf(symbol));
-          }
-        }
-      } else if (labelRow !== 0) {
-        myLog("warn", "Table %s: No physical or symbolic headers found.", this.longName);
-      } else {
-        myLog("trace", "Table %s: Confirmed as Raw/Output sheet (LabelRow=0).", this.longName);
-      }
+    // 3. Fail Fast: If no physical labels found but LabelRow is not 0, throw an error!
+    if (this._columnMap.size === 0 && labelRow !== 0) {
+      throw new Error(`[Schema Error: ${this.longName}] Physical sheet has no headers at row ${labelRow || 1}. ` +
+        `The columnMap MUST be derived from physical headers. Please add headers to the sheet or set LabelRow to 0 in the Registry.`);
+    } else if (labelRow === 0) {
+      myLog("trace", "Table %s: Confirmed as Raw/Output sheet (LabelRow=0).", this.longName);
     }
     
     myLog("trace", "Initialized columnMap for %s with %d labels", this.longName, this._columnMap.size);
@@ -122,11 +112,6 @@ class Table extends Sheet {
   getProperty(propName) {
     const key = String(propName || "").toLowerCase().trim();
     const val = this._properties[key];
-    
-    if (key === "keyprefix") {
-       myLog("trace", "Table [%s]: getProperty('%s') -> '%s' (Available: [%s])", 
-         this.longName, key, val, Object.keys(this._properties).join(", "));
-    }
 
     if (val !== undefined && val !== null && val !== "") return val;
 
@@ -185,13 +170,11 @@ class Table extends Sheet {
 
   /**
    * Automatically resolves symbolic offsets for this table based on the global TABLE_COLUMN_MAP.
-   * If an override map is provided, it uses that instead.
    */
-  getSymbolicOffsets(overrideMap = null) {
-    const map = overrideMap || TABLE_COLUMN_MAP[this.longName];
+  getSymbolicOffsets() {
+    const map = TABLE_COLUMN_MAP[this.longName];
     if (!map) {
-      myLog("trace", "No standard column map found for %s", this.longName);
-      return {};
+      throw new Error(`Symbolic Map Error: No column mapping defined in Constants for table "${this.longName}".`);
     }
     return this.getOffsets(map);
   }
@@ -354,7 +337,9 @@ class Table extends Sheet {
   }
 
   fetchWindow() {
-    this.fetch(this.firstDataRowIndex);
+    if (!this._isFetched) {
+      this.fetch(this.firstDataRowIndex);
+    }
   }
 
   /**
@@ -374,23 +359,32 @@ class Table extends Sheet {
   // =========================================================================
 
   /**
-   * Internal helper to resolve key column metadata once.
+   * Lazy Getter for Key Metadata.
+   * Parses the Registry property 'Key' or 'KeyFields' to build the metadata schema.
+   * This ensures we only perform column lookups once, and cache the result.
    */
-  _initializeKeyMetadata() {
+  getKeyMetadata() {
+    // 1. Lazy Cache Guard: Return the schema immediately if we've already built it.
     if (this._keyMetadata) return this._keyMetadata;
 
+    // 2. Read Registry Configuration: Look for primary keys or composite key definitions.
     const targetKeyField = this.getProperty("Key");
     const keyFieldsRaw = this.getProperty("KeyFields");
 
+    // 3. Schema Resolution: We use a switch(true) for strict priority routing.
     switch (true) {
       case !!targetKeyField: {
-        // Single Key (Priority)
+        // PRIORITY 1: Single Key
+        // If a 'Key' is explicitly defined (e.g., "PK"), it overrides everything else.
         const keyOffset = this.getColOffset(targetKeyField);
+        
+        // Fail-Fast: If the configured Key column doesn't exist in the physical sheet, crash immediately.
         if (keyOffset === -1) {
           const labels = this.getLabels();
           throw new Error(`CRITICAL: Key column '${targetKeyField}' not found in ${this.longName}. Available Columns: [${labels.join(", ")}]`);
         }
         
+        // Cache the metadata schema
         this._keyMetadata = {
           type: "single",
           offset: keyOffset,
@@ -400,12 +394,16 @@ class Table extends Sheet {
       }
       
       case !!keyFieldsRaw: {
-        // Composite Key (Fallback)
+        // PRIORITY 2: Composite Key (Fallback)
+        // If no Single Key exists, check if multiple columns are grouped to form a unique hash.
         const fieldList = String(keyFieldsRaw).split(",").map(field => field.trim());
+        
         this._keyMetadata = {
           type: "composite",
           fields: fieldList.map(field => {
             const fieldOffset = this.getColOffset(field);
+            
+            // Fail-Fast: Every sub-field in the composite key must physically exist.
             if (fieldOffset === -1) throw new Error("CRITICAL: KeyField '" + field + "' not found in " + this.longName);
             
             return {
@@ -418,9 +416,11 @@ class Table extends Sheet {
       }
       
       default:
+        // FAIL-FAST: A Table without a defined Primary Key cannot safely perform Replace/Update operations.
         const available = Object.keys(this._properties).join(", ");
         throw new Error(`CRITICAL: Table ${this.longName} has no 'Key' or 'KeyFields' configured in the registry. Available properties: [${available}]. Check your spreadsheet column headers.`);
     }
+    
     return this._keyMetadata;
   }
 
@@ -431,27 +431,46 @@ class Table extends Sheet {
    */
   getRowKey(row, pRow = null) {
     try {
-      if (!this._keyMetadata) this._initializeKeyMetadata();
+      // 1. Fetch the cached metadata schema (Single vs Composite)
+      const meta = this.getKeyMetadata();
       
-      if (this._keyMetadata.type === "single") {
-        const rawVal = row[this._keyMetadata.offset];
+      if (meta.type === "single") {
+        // --- SINGLE KEY RESOLUTION ---
+        const rawVal = row[meta.offset];
+        
+        // "Ghost Row" Guard: If the primary key cell is entirely empty, treat the row as a spacer/ghost row.
+        // Returning null signals to the engine that this row should be skipped entirely.
         if (rawVal === undefined || rawVal === "") return null;
         
-        const val = TypeUtils.castType(rawVal, this._keyMetadata.fieldType);
+        // Cast the value strictly according to the TypeUtils definition to ensure exact matching 
+        // (e.g. converting numeric strings to numbers, formatting dates)
+        const val = TypeUtils.castType(rawVal, meta.fieldType);
         return val === null ? null : String(val).trim();
       } else {
-        if (this._keyMetadata.fields.length === 0) return null;
+        // --- COMPOSITE KEY RESOLUTION ---
+        if (meta.fields.length === 0) return null;
+        
         let allEmpty = true;
-        const compositeValue = this._keyMetadata.fields.map(fieldMeta => {
+        
+        // Map over all configured composite fields to build a pipe-delimited string of values
+        const compositeValue = meta.fields.map(fieldMeta => {
           const rawCell = row[fieldMeta.offset];
+          
+          // Track if the entire composite footprint is blank (another Ghost Row check)
           if (rawCell !== undefined && rawCell !== null && String(rawCell).trim() !== "") {
             allEmpty = false;
           }
+          
+          // Strictly cast and normalize each piece of the composite key to guarantee consistent hashing
           const val = TypeUtils.castType(rawCell, fieldMeta.type);
           return String(val || "").trim().toLowerCase();
         }).join("|");
         
+        // If every single column that makes up the composite key is empty, it's a ghost row. Skip it.
         if (allEmpty) return null;
+        
+        // Pass the standardized, pipe-delimited string through a cryptographic hash function
+        // to generate a reliable, collision-resistant string ID (e.g., an MD5/SHA hash).
         return CryptoUtils.generateHash(compositeValue);
       }
     } catch (e) {
@@ -459,55 +478,22 @@ class Table extends Sheet {
     }
   }
 
+  /**
+   * Initializes and populates the Primary Key Hash Map.
+   * This provides O(1) lookups for deduplication during Update/Replace operations.
+   */
   buildHashKeyMap() {
-    this._hashKeyMap.clear();
+    // Use flatMap to build key-value pairs while natively satisfying type inference (no nulls)
+    this._hashKeyMap = new Map(
+      this.getWindow().flatMap((row, index) => {
+        const key = this.getRowKey(row);
+        return key ? [[String(key).trim().toLowerCase(), index]] : [];
+      })
+    );
+    
     this._isHashed = true;
-
-    // --- FULL SCAN FOR KEYS ---
-    // If this is an UpdateTable, we MUST know all existing keys to prevent duplicates,
-    // even if they fall outside the current 'FirstRow' window.
-    if (this.sheet && (this instanceof UpdateTable || this.getProperty("importmethod"))) {
-      const lastRow = this.sheet.getLastRow();
-      if (lastRow >= this.firstDataRowIndex) {
-        this._initializeKeyMetadata();
-        const keyMetadata = this._keyMetadata;
-        
-        // Optimize: If it's a single column key, fetch only that column
-        if (keyMetadata.type === "single") {
-          const keyCol = keyMetadata.offset + 1;
-          const values = this.sheet.getRange(this.firstDataRowIndex, keyCol, lastRow - this.firstDataRowIndex + 1, 1).getValues();
-          values.forEach((valArr, index) => {
-            const rawVal = valArr[0];
-            if (rawVal !== undefined && rawVal !== "") {
-              const key = String(TypeUtils.castType(rawVal, keyMetadata.fieldType) || "").trim().toLowerCase();
-              if (key) this._hashKeyMap.set(key, index);
-            }
-          });
-          myLog("trace", "Table %s: Hashed %d keys from full-sheet scan (Col %d).", this.longName, this._hashKeyMap.size, keyCol);
-          return;
-        } else {
-          // Composite Keys: Fetch only the necessary columns for the full sheet
-          const lastCol = this.sheet.getLastColumn();
-          const numRows = lastRow - this.firstDataRowIndex + 1;
-          const fullData = this.sheet.getRange(this.firstDataRowIndex, 1, numRows, lastCol).getValues();
-          
-          fullData.forEach((row, index) => {
-            const key = this.getRowKey(row);
-            if (key) this._hashKeyMap.set(key, index);
-          });
-          myLog("trace", "Table %s: Hashed %d keys from full-sheet scan (Composite).", this.longName, this._hashKeyMap.size);
-          return;
-        }
-      }
-    }
-
-    // Fallback: Hash only the current window
-    this.getWindow().forEach((row, index) => {
-      const key = this.getRowKey(row);
-      if (key) {
-        this._hashKeyMap.set(String(key).trim().toLowerCase(), index);
-      }
-    });
+    
+    myLog("trace", "Table %s: Hashed %d keys from RAM window.", this.longName, this._hashKeyMap.size);
   }
 
   /**
@@ -526,30 +512,49 @@ class Table extends Sheet {
   }
 
   /**
-   * High-Performance Lookup
-   * Builds a lazy cache of KeyCol -> ValCol for O(1) retrieval.
+   * High-Performance In-Memory VLOOKUP.
+   * Retrieves a specific value from a target column by searching for a key in a key column.
+   * Builds a lazy, nested cache (Map of Maps) for KeyCol -> ValCol to guarantee O(1) retrieval
+   * even if called thousands of times consecutively.
+   * 
+   * @param {string} keyCol The column name to search inside.
+   * @param {string} valCol The column name containing the return value.
+   * @param {any} searchVal The target value to search for.
    */
   lookupValue(keyCol, valCol, searchVal) {
+    // 1. Initialize the master cache Map if this is the first lookup on this Table
     if (!this._lookupCacheMap) this._lookupCacheMap = new Map();
+    
+    // Create a unique cache string for this specific column combination (e.g. "LongName_KeyPrefix")
     const cacheKey = `${keyCol}_${valCol}`;
     
+    // 2. Cache Miss: We have never performed a lookup for this column pair yet
     if (!this._lookupCacheMap.has(cacheKey)) {
+      // Force the RAM window to load if it hasn't already
       this.fetch(this.firstDataRowIndex);
       
       const keyOffset = this.getColOffset(keyCol);
       const valOffset = this.getColOffset(valCol);
       
+      // Fail safely if the columns don't physically exist in the sheet
       if (keyOffset === -1 || valOffset === -1) return "";
  
-      const lookupMap = new Map();
-      this._window.forEach(row => {
-        const k = row[keyOffset];
-        if (k !== undefined && k !== "") lookupMap.set(String(k).toLowerCase(), row[valOffset]);
-      });
+      // Iterate over the entire RAM window exactly once to build a dedicated Map for this column pair
+      // using flatMap to elegantly filter out blanks without tripping type inferencers.
+      const lookupMap = new Map(
+        this._window.flatMap(row => {
+          const k = row[keyOffset];
+          // Ignore empty cells, and standardize the key to lowercase string for reliable matching
+          return (k !== undefined && k !== "") ? [[String(k).toLowerCase(), row[valOffset]]] : [];
+        })
+      );
+      
+      // Store this dedicated column-pair Map in the master cache
       this._lookupCacheMap.set(cacheKey, lookupMap);
       myLog("trace", "Built lookup cache for %s (%s->%s)", this.longName, keyCol, valCol);
     }
     
+    // 3. Cache Hit: Instantly retrieve the value in O(1) time using the standardized search value
     return this._lookupCacheMap.get(cacheKey).get(String(searchVal).toLowerCase()) || "";
   }
   

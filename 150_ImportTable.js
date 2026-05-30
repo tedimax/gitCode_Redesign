@@ -10,6 +10,7 @@ class ImportTable extends UpdateTable {
     super(ss, longName, properties);
     this._compiledFormulaMap = new Map(); // TargetField -> Function
     this._rawFormulaMap = new Map();      // TargetField -> Original String (for dep analysis)
+    this._isEngineInitialized = false;
     this._sourceOverride = null;          // Fluent API override
   }
 
@@ -36,8 +37,6 @@ class ImportTable extends UpdateTable {
    * Orchestrates the high-level transformation lifecycle.
    */
   transform() {
-    this.initializeMappingEngine();
-
     // Utils.getSourceSheet() handles fail-fast if missing.
     const sourceSheet = Utils.getSourceSheet(this);
     const sourceRows = sourceSheet.getWindow(); // Ensure data is fetched
@@ -269,11 +268,12 @@ class ImportTable extends UpdateTable {
    * Evaluates if the row should be kept based on the 'NewFilter' property.
    */
   _shouldKeepRow(calc, rowOff, context) {
-    if (!this._compiledFilter) return true;
+    const filter = this.getCompiledFilter();
+    if (!filter) return true;
     const sourceSheet = Utils.getSourceSheet(this);
     const sourceRow = sourceSheet.getWindow()[rowOff];
     const sourceLabels = sourceSheet.getLabels();
-    const result = this._compiledFilter(rowOff, calc, context, context.props, sourceRow, sourceLabels);
+    const result = filter(rowOff, calc, context, context.props, sourceRow, sourceLabels);
     return TypeUtils.isTrue(result);
   }
 
@@ -297,10 +297,27 @@ class ImportTable extends UpdateTable {
   // =========================================================================
 
   /**
+   * Lazy Getter for Formula Map
+   */
+  getCompiledFormulaMap() {
+    this._initializeMappingEngine();
+    return this._compiledFormulaMap;
+  }
+
+  /**
+   * Lazy Getter for Row Filter
+   */
+  getCompiledFilter() {
+    this._initializeMappingEngine();
+    return this._compiledFilter;
+  }
+
+  /**
    * Bootstraps the mapping rules and compiles formulas into executable functions.
    */
-  initializeMappingEngine() {
-    if (this._compiledFormulaMap.size > 0) return;
+  _initializeMappingEngine() {
+    if (this._isEngineInitialized) return;
+    this._isEngineInitialized = true;
 
     const sourceSheet = Utils.getSourceSheet(this);
     const sourceLongName = sourceSheet.longName;
@@ -366,7 +383,8 @@ class ImportTable extends UpdateTable {
    */
   _buildExecutionPlan(sourceSheet) {
     const sourceLabels = sourceSheet.getLabels();
-    return Array.from(this._compiledFormulaMap.entries()).map(([targetField, compiledFormula]) => {
+    const formulaMap = this.getCompiledFormulaMap();
+    return Array.from(formulaMap.entries()).map(([targetField, compiledFormula]) => {
       const formulaStr = this._rawFormulaMap.get(targetField) || `[${targetField}]`;
       const match = String(formulaStr).trim().match(/^\[([^\]]+)\]$/);
       let sourceIdx = -1;
@@ -389,11 +407,9 @@ class ImportTable extends UpdateTable {
    * Ultra-fast array copy for tables with zero complex logic.
    */
   _tryFastClone(sourceSheet) {
-    this.initializeMappingEngine();
-    
     // REVIEW: Bypassing Fast Clone if a filter is configured prevents filter bypass bugs.
     // In the future, we could optimize this by executing the filter logic inside the fast clone loop itself.
-    if (this._compiledFilter) {
+    if (this.getCompiledFilter()) {
       myLog("info", "Fast Clone candidate %s rejected: NewFilter is configured. Falling back to full engine.", this.longName);
       return { success: false };
     }

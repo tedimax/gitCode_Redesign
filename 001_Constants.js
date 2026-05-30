@@ -181,8 +181,8 @@ const TABLE_COLUMN_MAP = {
     labelrow: "LabelRow",
     process: "Process" // The state-machine column for batch imports
   },
-  // Template for Schedule-driven generation
-  "Schedules": {
+  // Definition for Schedule-driven generation
+  "ManualEntry_ScheduledTransactions": {
     dateStart: "DateStart",
     dateEnd: "DateEnd",
     interval: "Interval",

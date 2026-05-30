@@ -134,7 +134,14 @@ class UpdateTable extends Table {
     try {
       // 3. Route to specific persistence logic
       let stats = { added: 0, updated: 0 };
-      const normalizedMode = mode.toLowerCase();
+      let normalizedMode = String(mode).toLowerCase();
+      
+      // Safety Guard: If we have an active read-only slack window, 'replace' mode is physically unsafe.
+      // We MUST use 'update' mode to meticulously map keys and respect the absolute boundary.
+      if (this.absoluteFirstRow > this.firstDataRowIndex && (normalizedMode === "replace" || normalizedMode === "replacerows")) {
+        myLog("warn", "Persistence Safety Guard: Table %s has an active Slack Window. Forcing 'update' mode to protect historical data.", this.longName);
+        normalizedMode = "updaterows";
+      }
 
       switch (normalizedMode) {
         case "replace":
@@ -280,6 +287,13 @@ class UpdateTable extends Table {
       const existingRowOff = this.getHashKeyMap().get(rowKey.toLowerCase());
 
       if (existingRowOff !== undefined) {
+        // Enforce Read-Only Slack Window: Do not update historical rows before the Absolute Boundary
+        const physicalRowIndex = this.firstDataRowIndex + existingRowOff;
+        if (this.absoluteFirstRow && physicalRowIndex < this.absoluteFirstRow) {
+          myLog("trace", "Row " + idx + " (Key: " + rowKey + ") -> SKIPPED (Matches historical row inside Read-Only slack window)");
+          return;
+        }
+
         const existingRow = this.getWindow()[existingRowOff];
         
         const isDirty = newRow.some((newVal, colOff) => {

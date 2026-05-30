@@ -50,7 +50,7 @@ class GenerateTable extends ImportTable {
     const sourceSheet = Utils.getSourceSheet(this);
 
     // Identify required columns in the source sheet for expansion math
-    const scheduleCols = sourceSheet.getSymbolicOffsets(TABLE_COLUMN_MAP.Schedules);
+    const scheduleCols = sourceSheet.getSymbolicOffsets();
 
     // Fallback search for unit/multiplier column if "Unit" is missing
     if (scheduleCols.unit === -1) {

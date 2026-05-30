@@ -138,15 +138,7 @@ function _calculateAndSaveWindow(longName, year) {
     // 1. Calculate Rows
     let firstRow, lastRow;
     
-    // Parse custom slack days from registry properties (WindowSlack column)
-    const slackDays = Number(config.WindowSlack || config.windowslack || 0);
-    
     const targetDate = new Date(year - 1, 3, 1); // 1st April (Start of the Financial Year)
-    if (!isNaN(slackDays) && slackDays > 0) {
-      targetDate.setDate(targetDate.getDate() - slackDays);
-      myLog("info", "Applying WindowSlack: Moving window target date back by %d day(s) to %s for %s", 
-        slackDays, targetDate.toISOString().split('T')[0], longName);
-    }
 
     const dateFieldName = config.DateField || "Date"; // Pull from Registry
     let calculatedFirstRow = table.calculateFirstRowByDate(targetDate, dateFieldName);

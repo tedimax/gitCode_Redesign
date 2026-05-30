@@ -47,7 +47,9 @@ class Sheet {
     }
 
     // Windows state
-    this.firstDataRowIndex = Number(this._config.firstrow) || 2;
+    this.absoluteFirstRow = Number(this._config.firstrow) || 2;
+    const slackRows = Number(this._config.windowslack) || 0;
+    this.firstDataRowIndex = Math.max(2, this.absoluteFirstRow - slackRows);
     this.windowDataLength = 0;
     this.currentRowOffset = 0;
     this._isFetched = false;
@@ -62,7 +64,9 @@ class Sheet {
    * Ensures data is loaded exactly once on demand.
    */
   getWindow() {
-    this.fetch(this.firstDataRowIndex);
+    if (!this._isFetched) {
+      this.fetch(this.firstDataRowIndex);
+    }
     return this._window;
   }
 
@@ -308,10 +312,11 @@ class Sheet {
 
   clearDataArea() {
     const lastRow = this.getLastRowIndex();
-    if (lastRow >= this.firstDataRowIndex) {
-      this.sheet.getRange(this.firstDataRowIndex, 1, lastRow - this.firstDataRowIndex + 1, this.getLastColumnIndex()).clearContent();
+    const wipeStartRow = this.absoluteFirstRow || this.firstDataRowIndex;
+    if (lastRow >= wipeStartRow) {
+      this.sheet.getRange(wipeStartRow, 1, lastRow - wipeStartRow + 1, this.getLastColumnIndex()).clearContent();
     }
-    this._cachedLastRowIndex = this.firstDataRowIndex - 1;
+    this._cachedLastRowIndex = wipeStartRow - 1;
     this._maxWrittenRow = 0;
   }
 
