@@ -290,7 +290,6 @@ class UpdateTable extends Table {
         // Enforce Read-Only Slack Window: Do not update historical rows before the Absolute Boundary
         const physicalRowIndex = this.firstDataRowIndex + existingRowOff;
         if (this.absoluteFirstRow && physicalRowIndex < this.absoluteFirstRow) {
-          myLog("trace", "Row " + idx + " (Key: " + rowKey + ") -> SKIPPED (Matches historical row inside Read-Only slack window)");
           return;
         }
 
