@@ -683,7 +683,7 @@ var FormulaUtils = {
         
         if (target && typeof target._buildExecutionPlan === 'function') {
           myLog("info", "isLast: Building cache using target execution plan for %s", target.longName);
-          target.initializeMappingEngine();
+          target._initializeMappingEngine();
           const plan = target._buildExecutionPlan(driver);
           
           const sourceLabels = driver.getLabels();

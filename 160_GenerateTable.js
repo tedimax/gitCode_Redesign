@@ -11,14 +11,14 @@ class GenerateTable extends ImportTable {
   }
 
   /**
-   * Overrides ImportTable.initializeMappingEngine to inject special DateEvent & PK rules
+   * Overrides ImportTable._initializeMappingEngine to inject special DateEvent & PK rules
    * only if they are not already defined in the formulas sheet.
    */
-  initializeMappingEngine() {
+  _initializeMappingEngine() {
     if (this._compiledFormulaMap.size > 0) return;
 
     // 1. Run standard registry formula compilation
-    super.initializeMappingEngine();
+    super._initializeMappingEngine();
 
     // 2. Inject explicit fallbacks ONLY if they are not defined in the sheet
     const labels = this.getLabels();
@@ -44,7 +44,7 @@ class GenerateTable extends ImportTable {
    * Overrides ImportTable.transform to implement 1:N expansion logic.
    */
   transform() {
-    this.initializeMappingEngine();
+    this._initializeMappingEngine();
 
     // Utils.getSourceSheet() handles fail-fast if missing.
     const sourceSheet = Utils.getSourceSheet(this);
@@ -71,69 +71,46 @@ class GenerateTable extends ImportTable {
 
     const context = FormulaUtils.createContext(sourceSheet, this);
     const executionPlan = this._buildExecutionPlan(sourceSheet);
-    const expandedObjects = [];
     let excludedCount = 0;
 
     // --- TARGET BOUNDARY DATE DEDUPLICATION GUARD ---
-    let targetBoundaryDate = null;
     const dateFieldName = this.getProperty("DateField") || "DateEvent";
-    const dateColOffset = this.getColOffset(dateFieldName);
-    if (dateColOffset !== -1) {
-      const prevRowIndex = this.firstDataRowIndex - 1;
-      const labelRowIdx = Number(this.getProperty("LabelRow")) || 1;
-      
-      let resolvedDateRaw = null;
-      if (this.sheet && prevRowIndex > labelRowIdx) {
-        resolvedDateRaw = this.sheet.getRange(prevRowIndex, dateColOffset + 1).getValue();
-        if (resolvedDateRaw) {
-          const parsed = resolvedDateRaw instanceof Date ? resolvedDateRaw : new Date(resolvedDateRaw);
-          if (!isNaN(parsed.getTime())) {
-            targetBoundaryDate = parsed;
-            myLog("info", "Target Window Date Boundary for %s: %s (preceding row %d date)", 
-              this.longName, targetBoundaryDate.toISOString().split('T')[0], prevRowIndex);
-          }
-        }
-      }
-      
-      // Fallback: If no preceding row, look at the first row of the current window
-      if (!targetBoundaryDate) {
-        const targetRows = this.getWindow();
-        if (targetRows.length > 0) {
-          const firstRowDateRaw = targetRows[0][dateColOffset];
-          if (firstRowDateRaw) {
-            const parsed = firstRowDateRaw instanceof Date ? firstRowDateRaw : new Date(firstRowDateRaw);
-            if (!isNaN(parsed.getTime())) {
-              targetBoundaryDate = parsed;
-              myLog("info", "Target Window Date Boundary for %s: %s (first row date fallback)", 
-                this.longName, targetBoundaryDate.toISOString().split('T')[0]);
-            }
-          }
-        }
-      }
-    }
+    const targetBoundaryDate = this._getTargetBoundaryDate(dateFieldName);
 
-    // Resolve the active Financial Year range for this spreadsheet
+    // --- ACTIVE FINANCIAL YEAR RESOLUTION & GENERATION BOUNDARY ---
+    // The scheduling engine expands template rows into transaction occurrences. 
+    // To prevent generating transactions infinitely into the future, we cap generation 
+    // at the end of the active Financial Year (which runs April 1st to March 31st).
     let activeYear = new Date().getFullYear();
+    
     if (targetBoundaryDate) {
+      // Strategy A: If we have a target boundary date (last synced transaction date),
+      // resolve the active Financial Year based on that transaction's date context.
       const fyStart = DateUtils.getFYStartYear(targetBoundaryDate);
       if (fyStart) activeYear = Number(fyStart);
     } else {
+      // Strategy B (Fallback): If the sheet is empty, resolve the FY based on the current date.
+      // In the UK fiscal calendar, if the current calendar month is Jan, Feb, or March (months < 3),
+      // the active Financial Year began in the previous calendar year.
       const now = new Date();
       if (now.getMonth() < 3) activeYear = now.getFullYear() - 1;
       else activeYear = now.getFullYear();
     }
-    const fyEndDate = new Date(activeYear + 1, 2, 31); // 31st March of the next calendar year
+    
+    // Cap generation at March 31st of the calendar year following the FY start (Month 2 is March in 0-indexed JS Dates)
+    const fyEndDate = new Date(activeYear + 1, 2, 31); 
+    
     myLog("info", "GenerateTable: Active Financial Year resolved as FY%d. Capping scheduled occurrences at %s", 
       activeYear, fyEndDate.toISOString().split('T')[0]);
 
     myLog("info", "Starting Expansion Engine for %s...", this.longName);
 
-    // 1. Loop through each Template Row in the Source
-    sourceSheet.getWindow().forEach((sourceRow, rowOff) => {
+    // 1. Loop through each Template Row in the Source and reduce them to a single flat array of expanded objects
+    const expandedObjects = sourceSheet.getWindow().reduce((accumulator, sourceRow, rowOff) => {
       const pk = sourceSheet.getRowKey(sourceRow);
       if (!pk) {
         myLog("trace", "GenerateTable: Skipping spacer/comment row %d in source templates.", rowOff + sourceSheet.firstDataRowIndex);
-        return;
+        return accumulator;
       }
 
       const startDate = sourceRow[scheduleCols.dateStart];
@@ -170,31 +147,28 @@ class GenerateTable extends ImportTable {
       // 2. Generate the series of dates using the Temporal helper
       const occurrenceDates = DateUtils.getScheduledDates(parsedStart, parsedEnd, match, multiplier);
 
-      // 3. For each date, execute a custom transformation
-      occurrenceDates.forEach(date => {
-        const dateObj = new Date(date.toString());
-        
-        // Deduplication Guard: Exclude generated rows that are older than targetBoundaryDate
-        if (targetBoundaryDate && dateObj.getTime() < targetBoundaryDate.getTime()) {
-          excludedCount++;
-          return;
-        }
+      // 3. Transform scheduled dates functionally into calculated row objects
+      const validOccurrences = occurrenceDates
+        .filter(date => {
+          const dateObj = new Date(date.toString());
+          const isBeforeBoundary = targetBoundaryDate && dateObj.getTime() < targetBoundaryDate.getTime();
+          if (isBeforeBoundary) {
+            excludedCount++;
+            return false;
+          }
+          return true;
+        })
+        .map(date => {
+          const calc = { EventDate: DateUtils.toEgressDate(date.toString()) };
+          // Execute plan returns the calculated row object
+          const calculated = this._executePlan(calc, sourceRow, rowOff, context, executionPlan, sourceSheet);
+          return this._applyGlobalPatches(calculated);
+        })
+        .filter(finalized => this._shouldKeepRow(finalized, rowOff, context));
 
-        // Inject the current date into the row context
-        const calc = { EventDate: DateUtils.toEgressDate(date.toString()) };
-        
-        // Execute the plan against this specific occurrence (returns a new calculated object)
-        const calculated = this._executePlan(calc, sourceRow, rowOff, context, executionPlan, sourceSheet);
-        
-        // Finalize with patches (if any)
-        const finalized = this._applyGlobalPatches(calculated);
-        
-        // Apply Registry filter if defined
-        if (this._shouldKeepRow(finalized, rowOff, context)) {
-          expandedObjects.push(finalized);
-        }
-      });
-    });
+      // Accumulate resolved occurrences
+      return accumulator.concat(validOccurrences);
+    }, []);
 
     if (excludedCount > 0 && targetBoundaryDate) {
       myLog("info", "GenerateTable [Boundary Guard]: Excluded %d generated transactions preceding boundary date %s",
@@ -211,6 +185,5 @@ class GenerateTable extends ImportTable {
   }
 }
 
-// Register both naming conventions with globals
+// Register with globals
 globals.tableMap['GenerateTable'] = GenerateTable;
-globals.tableMap['GeneratedTransactions'] = GenerateTable;

@@ -53,54 +53,13 @@ class ImportTable extends UpdateTable {
     myLog("info", "Starting transformation engine for %s...", this.longName);
 
     // --- TARGET BOUNDARY DATE DEDUPLICATION GUARD ---
-    let targetBoundaryDate = null;
     const dateFieldName = this.getProperty("DateField") || "Date";
-    const dateColOffset = this.getColOffset(dateFieldName);
-    
-    // Ledgers_GeneratedTransactions is excluded because its source sheet (manualEntry_scheduled transactions)
-    // contains templates/schedules rather than normal 1:1 transaction rows. Applying a 1:1 date boundary 
-    // check here would fail or filter incorrectly before the schedules are expanded into occurrences.
-    if (this.longName !== "Ledgers_GeneratedTransactions" && dateColOffset !== -1) {
-      const prevRowIndex = this.firstDataRowIndex - 1;
-      const labelRowIdx = Number(this.getProperty("LabelRow")) || 1;
-      
-      let resolvedDateRaw = null;
-      
-      // 1. Primary Strategy: Try to read the date from the row immediately above our target write window
-      // (This finds the date of the last transaction already saved to the physical spreadsheet)
-      if (this.sheet && prevRowIndex > labelRowIdx) {
-        // Retrieve the cell value from the physical sheet (Google Sheets API is 1-indexed)
-        resolvedDateRaw = this.sheet.getRange(prevRowIndex, dateColOffset + 1).getValue();
-        if (resolvedDateRaw) {
-          // Coerce raw spreadsheet cell value to a standard JS Date object
-          const parsed = resolvedDateRaw instanceof Date ? resolvedDateRaw : new Date(resolvedDateRaw);
-          if (!isNaN(parsed.getTime())) {
-            targetBoundaryDate = parsed;
-            myLog("info", "Target Window Date Boundary for %s: %s (preceding row %d date)", 
-              this.longName, targetBoundaryDate.toISOString().split('T')[0], prevRowIndex);
-          }
-        }
-      }
-      
-      // 2. Secondary Strategy (Fallback): If there is no preceding row (e.g. empty target sheet),
-      // look at the date of the first record loaded in our current in-memory cache window.
-      if (!targetBoundaryDate) {
-        const targetRows = this.getWindow();
-        if (targetRows.length > 0) {
-          // Read date field from the first cached record matrix row
-          const firstRowDateRaw = targetRows[0][dateColOffset];
-          if (firstRowDateRaw) {
-            // Parse cell value to Date object
-            const parsed = firstRowDateRaw instanceof Date ? firstRowDateRaw : new Date(firstRowDateRaw);
-            if (!isNaN(parsed.getTime())) {
-              targetBoundaryDate = parsed;
-              myLog("info", "Target Window Date Boundary for %s: %s (first row date fallback)", 
-                this.longName, targetBoundaryDate.toISOString().split('T')[0]);
-            }
-          }
-        }
-      }
-    }
+    // Ledgers_GeneratedTransactions is excluded from 1:1 boundary checks here because its source sheet
+    // (manualEntry_scheduled transactions) contains schedules. It is expanded to occurrences first
+    // and filtered individually in GenerateTable.
+    const targetBoundaryDate = (this.longName !== "Ledgers_GeneratedTransactions")
+      ? this._getTargetBoundaryDate(dateFieldName)
+      : null;
 
     // 1. Build Hybrid Execution Plan
     const executionPlan = this._buildExecutionPlan(sourceSheet);
@@ -228,6 +187,51 @@ class ImportTable extends UpdateTable {
         targetObjects.push(ghost);
       }
     });
+  }
+
+  /**
+   * Resolves the target sheet's date boundary to prevent processing older duplicate records.
+   * Looks at the preceding row first, then falls back to the first row of the cached window.
+   * 
+   * @param {string} dateFieldName - The column label representing the date field.
+   * @returns {Date|null} The resolved boundary Date object, or null if not found.
+   * @protected
+   */
+  _getTargetBoundaryDate(dateFieldName) {
+    const dateColOffset = this.getColOffset(dateFieldName);
+    if (dateColOffset === -1) return null;
+
+    const prevRowIndex = this.firstDataRowIndex - 1;
+    const labelRowIdx = Number(this.getProperty("LabelRow")) || 1;
+    
+    // 1. Primary Strategy: Try to read the date from the row immediately above our target write window
+    if (this.sheet && prevRowIndex > labelRowIdx) {
+      const resolvedDateRaw = this.sheet.getRange(prevRowIndex, dateColOffset + 1).getValue();
+      if (resolvedDateRaw) {
+        const parsed = resolvedDateRaw instanceof Date ? resolvedDateRaw : new Date(resolvedDateRaw);
+        if (!isNaN(parsed.getTime())) {
+          myLog("info", "Target Window Date Boundary for %s: %s (preceding row %d date)", 
+            this.longName, parsed.toISOString().split('T')[0], prevRowIndex);
+          return parsed;
+        }
+      }
+    }
+    
+    // 2. Secondary Strategy (Fallback): If there is no preceding row, look at the first cached window row
+    const targetRows = this.getWindow();
+    if (targetRows.length > 0) {
+      const firstRowDateRaw = targetRows[0][dateColOffset];
+      if (firstRowDateRaw) {
+        const parsed = firstRowDateRaw instanceof Date ? firstRowDateRaw : new Date(firstRowDateRaw);
+        if (!isNaN(parsed.getTime())) {
+          myLog("info", "Target Window Date Boundary for %s: %s (first row date fallback)", 
+            this.longName, parsed.toISOString().split('T')[0]);
+          return parsed;
+        }
+      }
+    }
+    
+    return null;
   }
 
   /**
