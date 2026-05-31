@@ -98,11 +98,79 @@ const Utils = (() => {
     return cleaned;
   };
 
+  /**
+   * Displays a UI Toast notification when a table begins importing.
+   * Extracts the source sheet dynamically and logs the execution start.
+   * 
+   * @param {Table} tableInstance - The target table running the import.
+   * @param {string} methodOverride - The persistence mode (e.g. 'replace', 'update').
+   */
+  const displayStartToast = (tableInstance, methodOverride = null) => {
+    let sourceName = "N/A";
+    try {
+      const src = getSourceSheet(tableInstance);
+      if (src) sourceName = src.longName || src.sheetName || "N/A";
+    } catch (e) {
+      // Safe bypass if no source exists (e.g. standalone tables)
+    }
+
+    if (sourceName === "N/A" && tableInstance.getProperty("sheettype") === "FileTable") {
+      sourceName = tableInstance.getProperty("FolderId") || tableInstance.getProperty("FileId") || "Google Drive Folder";
+    }
+
+    const method = methodOverride || tableInstance.getProperty("importmethod") || "replace";
+    const startMsg = `Source: ${sourceName}\nMethod: ${method}`;
+    const startTitle = `🔄 Importing ${tableInstance.longName}...`;
+    
+    myLog("info", `\n============================================================\n🔄 IMPORT START: ${tableInstance.longName}\n   Source: ${sourceName}\n   Method: ${method}\n============================================================`);
+    
+    try {
+      SpreadsheetApp.getActive().toast(startMsg, startTitle, 10);
+    } catch (e) {
+      myLog("warn", "Failed to display start toast: %s", e.message);
+    }
+  };
+
+  /**
+   * Displays a UI Toast notification when a table finishes importing.
+   * Parses the execution stats to provide a clear summary of changes.
+   * 
+   * @param {Table} tableInstance - The target table that just finished.
+   * @param {Object} stats - The persistence statistics {added, updated, deleted, mode}.
+   * @param {string} methodOverride - The persistence mode.
+   */
+  const displayFinishToast = (tableInstance, stats, methodOverride = null) => {
+    let finishMsg = "No changes (Up to date)";
+    if (stats) {
+      const modeStr = String(stats.mode || methodOverride || tableInstance.getProperty("importmethod") || "replace").toLowerCase();
+      if (modeStr === "replace" || modeStr === "replacerows" || (stats.added > 0 && stats.updated === 0 && stats.deleted === 0)) {
+        finishMsg = `Replaced: ${stats.added || 0} rows`;
+      } else {
+        const parts = [];
+        if (stats.added) parts.push(`Added: ${stats.added}`);
+        if (stats.updated) parts.push(`Updated: ${stats.updated}`);
+        if (stats.deleted) parts.push(`Deleted: ${stats.deleted}`);
+        finishMsg = parts.length ? parts.join(", ") : "No changes (Up to date)";
+      }
+    }
+    const finishTitle = `✅ Complete: ${tableInstance.longName}`;
+    
+    myLog("info", `\n============================================================\n✅ IMPORT COMPLETE: ${tableInstance.longName}\n   Status: ${finishMsg}\n============================================================`);
+    
+    try {
+      SpreadsheetApp.getActive().toast(finishMsg, finishTitle, 5);
+    } catch (e) {
+      myLog("warn", "Failed to display finish toast: %s", e.message);
+    }
+  };
+
   return {
     getSpreadsheetInstance,
     getSheetInstance,
     getSourceSheet,
-    cleanNameForRange
+    cleanNameForRange,
+    displayStartToast,
+    displayFinishToast
   };
 })();
 

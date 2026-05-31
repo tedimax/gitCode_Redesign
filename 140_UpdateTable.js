@@ -17,30 +17,9 @@ class UpdateTable extends Table {
   execute() {
     myLog("info", "Starting execution for %s...", this.longName);
     
-    // UI Feedback: Toast on Start
-    let sourceName = "N/A";
-    if (typeof Utils !== 'undefined' && typeof Utils.getSourceSheet === 'function') {
-      try {
-        const src = Utils.getSourceSheet(this);
-        if (src) sourceName = src.longName || src.sheetName || "N/A";
-      } catch (e) {
-        // Safe bypass
-      }
-    }
-    if (sourceName === "N/A" && this.getProperty("sheettype") === "FileTable") {
-      sourceName = this.getProperty("FolderId") || this.getProperty("FileId") || "Google Drive Folder";
-    }
-
-    const method = this._modeOverride || (this.getProperty("importmethod") || "replace");
-    const startMsg = `Source: ${sourceName}\nMethod: ${method}`;
-    const startTitle = `🔄 Importing ${this.longName}...`;
-    
-    myLog("info", `\n============================================================\n🔄 IMPORT START: ${this.longName}\n   Source: ${sourceName}\n   Method: ${method}\n============================================================`);
-    
-    try {
-      SpreadsheetApp.getActive().toast(startMsg, startTitle, 10);
-    } catch (e) {
-      myLog("warn", "Failed to display start toast: %s", e.message);
+    // UI Feedback: Toast on Start (Uses external utility to keep Orchestrator clean)
+    if (typeof Utils !== 'undefined' && typeof Utils.displayStartToast === 'function') {
+      Utils.displayStartToast(this, this._modeOverride);
     }
 
     // 1. Prepare Ingestion (Transformation/Fetch)
@@ -57,28 +36,9 @@ class UpdateTable extends Table {
     
     myLog("info", "Execution complete for %s. Stats: %s", this.longName, JSON.stringify(stats));
 
-    // UI Feedback: Toast on Finish
-    let finishMsg = "No changes (Up to date)";
-    if (stats) {
-      const modeStr = String(stats.mode || method).toLowerCase();
-      if (modeStr === "replace" || modeStr === "replacerows" || (stats.added > 0 && stats.updated === 0 && stats.deleted === 0)) {
-        finishMsg = `Replaced: ${stats.added || 0} rows`;
-      } else {
-        const parts = [];
-        if (stats.added) parts.push(`Added: ${stats.added}`);
-        if (stats.updated) parts.push(`Updated: ${stats.updated}`);
-        if (stats.deleted) parts.push(`Deleted: ${stats.deleted}`);
-        finishMsg = parts.length ? parts.join(", ") : "No changes (Up to date)";
-      }
-    }
-    const finishTitle = `✅ Complete: ${this.longName}`;
-    
-    myLog("info", `\n============================================================\n✅ IMPORT COMPLETE: ${this.longName}\n   Status: ${finishMsg}\n============================================================`);
-    
-    try {
-      SpreadsheetApp.getActive().toast(finishMsg, finishTitle, 5);
-    } catch (e) {
-      myLog("warn", "Failed to display finish toast: %s", e.message);
+    // UI Feedback: Toast on Finish (Uses external utility)
+    if (typeof Utils !== 'undefined' && typeof Utils.displayFinishToast === 'function') {
+      Utils.displayFinishToast(this, stats, this._modeOverride);
     }
 
     return stats;
@@ -136,12 +96,7 @@ class UpdateTable extends Table {
       let stats = { added: 0, updated: 0 };
       let normalizedMode = String(mode).toLowerCase();
       
-      // Safety Guard: If we have an active read-only slack window, 'replace' mode is physically unsafe.
-      // We MUST use 'update' mode to meticulously map keys and respect the absolute boundary.
-      if (this.absoluteFirstRow > this.firstDataRowIndex && (normalizedMode === "replace" || normalizedMode === "replacerows")) {
-        myLog("warn", "Persistence Safety Guard: Table %s has an active Slack Window. Forcing 'update' mode to protect historical data.", this.longName);
-        normalizedMode = "updaterows";
-      }
+
 
       switch (normalizedMode) {
         case "replace":
@@ -220,11 +175,103 @@ class UpdateTable extends Table {
   _persistReplace(newData) {
     this.clearDataArea();
 
+    let processedData = newData;
+
     if (newData.length > 0) {
-      this.writeChunks(this.firstDataRowIndex, newData);
+      let sourceSheet = null;
+      try {
+        if (typeof Utils !== 'undefined' && typeof Utils.getSourceSheet === 'function') {
+          sourceSheet = Utils.getSourceSheet(this);
+        }
+      } catch (e) {
+        // Safe bypass
+      }
+
+      if (sourceSheet) {
+        const isUnion = sourceSheet.constructor.name === "UnionTable" || typeof sourceSheet._ensureSources === 'function';
+
+        if (isUnion) {
+          processedData = this._applyUnionDateFilter(newData);
+        } else {
+          // Slice by source slack offset for standard 1:1 ledger sync
+          const sourceFirstRow = sourceSheet.absoluteFirstRow || 2;
+          const sourceFirstDataRow = sourceSheet.firstDataRowIndex || 2;
+          const sourceSlackOffset = Math.max(0, sourceFirstRow - sourceFirstDataRow);
+          if (sourceSlackOffset > 0 && newData.length > sourceSlackOffset) {
+            processedData = newData.slice(sourceSlackOffset);
+            myLog("info", "Standard ledger sync: sliced %d slack rows from source payload.", sourceSlackOffset);
+          }
+        }
+      }
+
+      const writeStartRow = this.absoluteFirstRow || this.firstDataRowIndex;
+      if (processedData.length > 0) {
+        this.writeChunks(writeStartRow, processedData);
+      }
     }
-    myLog("info", "Replace complete: %d rows written.", newData.length);
-    return { added: newData.length, updated: 0 };
+    
+    myLog("info", "Replace complete: %d rows written to %s.", processedData.length, this.longName);
+    return { added: processedData.length, updated: 0 };
+  }
+
+  /**
+   * Filters input data for a UnionTable sync by removing records older than the target boundary date.
+   * The boundary date is resolved in order of priority:
+   * 1. The date value present in the row immediately preceding absoluteFirstRow.
+   * 2. A fallback April 1st date parsed from the sheet's name if a year (20XX) is present.
+   * 
+   * @param {Array<Array<any>>} newData - The raw input dataset.
+   * @returns {Array<Array<any>>} The filtered dataset.
+   * @private
+   */
+  _applyUnionDateFilter(newData) {
+    const dateFieldName = this.getProperty("DateField") || "Date";
+    const dateColOffset = this.getColOffset(dateFieldName);
+    if (dateColOffset === -1) {
+      return newData;
+    }
+
+    let targetBoundaryDate = null;
+    const labelRowIdx = Number(this.getProperty("LabelRow")) || 1;
+    const prevRowIndex = this.absoluteFirstRow - 1;
+
+    // 1. Attempt to get boundary date from the row directly above absoluteFirstRow
+    if (this.sheet && prevRowIndex > labelRowIdx) {
+      const rawDate = this.sheet.getRange(prevRowIndex, dateColOffset + 1).getValue();
+      if (rawDate) {
+        const parsed = rawDate instanceof Date ? rawDate : new Date(rawDate);
+        if (!isNaN(parsed.getTime())) {
+          targetBoundaryDate = parsed;
+        }
+      }
+    }
+
+    // 2. Fallback: Parse year from sheet name (e.g., "Ledger 2026") and default to April 1st
+    if (!targetBoundaryDate) {
+      const yearMatch = this.sheetName.match(/\b(20\d{2})\b/);
+      if (yearMatch) {
+        targetBoundaryDate = new Date(Number(yearMatch[1]), 3, 1);
+      }
+    }
+
+    if (!targetBoundaryDate) {
+      return newData;
+    }
+
+    // 3. Filter out rows that are strictly before the boundary date
+    const boundaryTime = targetBoundaryDate.getTime();
+    const filtered = newData.filter(row => {
+      const rawVal = row[dateColOffset];
+      if (!rawVal) return true; // Keep row if no date is provided
+      const valDate = rawVal instanceof Date ? rawVal : new Date(rawVal);
+      if (isNaN(valDate.getTime())) return true; // Keep row if date is invalid
+      return valDate.getTime() >= boundaryTime;
+    });
+
+    myLog("info", "UnionTable filter: Kept %d of %d rows matching date boundary >= %s", 
+      filtered.length, newData.length, targetBoundaryDate.toISOString().split('T')[0]);
+
+    return filtered;
   }
 
   /**
@@ -286,35 +333,47 @@ class UpdateTable extends Table {
 
       const existingRowOff = this.getHashKeyMap().get(rowKey.toLowerCase());
 
+      // Scenario A: The row key already exists in the destination sheet (potential update)
       if (existingRowOff !== undefined) {
-        // Enforce Read-Only Slack Window: Do not update historical rows before the Absolute Boundary
+        // Enforce Read-Only Slack Window: Do not update historical rows that lie before the absolute start row boundary
         const physicalRowIndex = this.firstDataRowIndex + existingRowOff;
         if (this.absoluteFirstRow && physicalRowIndex < this.absoluteFirstRow) {
-          return;
+          return; // Skip updates to locked/historical entries
         }
 
+        // Retrieve the matching existing row from the sheet cache window
         const existingRow = this.getWindow()[existingRowOff];
         
+        // Scan each column to determine if any field values have changed (is dirty)
         const isDirty = newRow.some((newVal, colOff) => {
           const fieldType = fieldTypes[colOff];
+          
+          // Normalize both values using the defined schema type for the column
           const normalizedNew = TypeUtils.castType(newVal, fieldType);
           const normalizedExisting = TypeUtils.castType(existingRow[colOff], fieldType);
           
+          // Default check: simple stringified comparison
           let dirty = String(normalizedNew) !== String(normalizedExisting);
           
-          // Fuzzy numeric comparison for numeric fields
+          // Performance/Precision Guard: Fuzzy numeric comparison for floating point numbers
+          // This avoids false-positive dirty flags caused by minor JavaScript float representation issues
           if (dirty && typeof normalizedNew === 'number' && typeof normalizedExisting === 'number') {
             const columnName = labels[colOff];
+            // 'balance' gets a dedicated fuzzy threshold, other numeric columns get the standard threshold
             const threshold = (columnName && columnName.toLowerCase() === "balance") 
               ? CONFIG_CONSTANTS.FUZZY_BALANCE_THRESHOLD 
               : CONFIG_CONSTANTS.FUZZY_NUMERIC_THRESHOLD;
+            
+            // Re-evaluate dirty status using the tolerance threshold
             dirty = Math.abs(normalizedNew - normalizedExisting) > threshold;
           }
           
+          // Primary Key Guard: Perform case-insensitive string comparison for Primary Key fields (PK)
           if (labels[colOff] && labels[colOff].toUpperCase() === "PK" && dirty) {
             dirty = String(normalizedNew).toLowerCase() !== String(normalizedExisting).toLowerCase();
           }
           
+          // Log detailed traces for the specific column mismatch if it remains dirty
           if (dirty) {
             myLog("trace", "  Column '%s' is dirty: New [%s] vs Existing [%s] (RAW: Source [%s] / Target [%s])", 
               labels[colOff], normalizedNew, normalizedExisting, newVal, existingRow[colOff]);
@@ -322,11 +381,13 @@ class UpdateTable extends Table {
           return dirty;
         });
         
+        // If one or more columns are dirty, mark this row as requiring an update
         if (isDirty) {
           myLog("trace", "Row " + idx + " (Key: " + rowKey + ") -> UPDATE (Dirty)");
           rowsToUpdate.push({ offset: existingRowOff, data: newRow });
         }
       } else {
+        // Scenario B: The row key does not exist in the destination sheet (new insertion)
         myLog("info", "Row " + idx + " (Key: " + rowKey + ") -> ADD (Not found in target)");
         rowsToAdd.push(newRow);
       }
