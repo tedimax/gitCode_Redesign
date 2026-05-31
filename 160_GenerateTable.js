@@ -183,11 +183,11 @@ class GenerateTable extends ImportTable {
         // Inject the current date into the row context
         const calc = { EventDate: DateUtils.toEgressDate(date.toString()) };
         
-        // Execute the plan against this specific occurrence
-        this._executePlan(calc, sourceRow, rowOff, context, executionPlan, sourceSheet);
+        // Execute the plan against this specific occurrence (returns a new calculated object)
+        const calculated = this._executePlan(calc, sourceRow, rowOff, context, executionPlan, sourceSheet);
         
         // Finalize with patches (if any)
-        const finalized = this._applyGlobalPatches(calc);
+        const finalized = this._applyGlobalPatches(calculated);
         
         // Apply Registry filter if defined
         if (this._shouldKeepRow(finalized, rowOff, context)) {

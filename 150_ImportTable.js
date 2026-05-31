@@ -56,14 +56,23 @@ class ImportTable extends UpdateTable {
     let targetBoundaryDate = null;
     const dateFieldName = this.getProperty("DateField") || "Date";
     const dateColOffset = this.getColOffset(dateFieldName);
+    
+    // Ledgers_GeneratedTransactions is excluded because its source sheet (manualEntry_scheduled transactions)
+    // contains templates/schedules rather than normal 1:1 transaction rows. Applying a 1:1 date boundary 
+    // check here would fail or filter incorrectly before the schedules are expanded into occurrences.
     if (this.longName !== "Ledgers_GeneratedTransactions" && dateColOffset !== -1) {
       const prevRowIndex = this.firstDataRowIndex - 1;
       const labelRowIdx = Number(this.getProperty("LabelRow")) || 1;
       
       let resolvedDateRaw = null;
+      
+      // 1. Primary Strategy: Try to read the date from the row immediately above our target write window
+      // (This finds the date of the last transaction already saved to the physical spreadsheet)
       if (this.sheet && prevRowIndex > labelRowIdx) {
+        // Retrieve the cell value from the physical sheet (Google Sheets API is 1-indexed)
         resolvedDateRaw = this.sheet.getRange(prevRowIndex, dateColOffset + 1).getValue();
         if (resolvedDateRaw) {
+          // Coerce raw spreadsheet cell value to a standard JS Date object
           const parsed = resolvedDateRaw instanceof Date ? resolvedDateRaw : new Date(resolvedDateRaw);
           if (!isNaN(parsed.getTime())) {
             targetBoundaryDate = parsed;
@@ -73,12 +82,15 @@ class ImportTable extends UpdateTable {
         }
       }
       
-      // Fallback: If no preceding row, look at the first row of the current window
+      // 2. Secondary Strategy (Fallback): If there is no preceding row (e.g. empty target sheet),
+      // look at the date of the first record loaded in our current in-memory cache window.
       if (!targetBoundaryDate) {
         const targetRows = this.getWindow();
         if (targetRows.length > 0) {
+          // Read date field from the first cached record matrix row
           const firstRowDateRaw = targetRows[0][dateColOffset];
           if (firstRowDateRaw) {
+            // Parse cell value to Date object
             const parsed = firstRowDateRaw instanceof Date ? firstRowDateRaw : new Date(firstRowDateRaw);
             if (!isNaN(parsed.getTime())) {
               targetBoundaryDate = parsed;
@@ -126,102 +138,9 @@ class ImportTable extends UpdateTable {
     }
 
     // 3. Injection (Ghost Rows)
-    if (typeof PatchManager !== 'undefined') {
-      const unused = PatchManager.getUnusedPatches(this.longName);
-      if (unused.length > 0) {
-        const withinWindow = unused.filter(ghost => {
-          if (!targetBoundaryDate) return true;
-
-          // A. Resolve date from the ghost object fields
-          let ghostDateRaw = ghost[dateFieldName];
-          
-          // B. Fallback: Parse date from PK if PK has the format Table#YYYYMMDD_... or similar
-          if (!ghostDateRaw && ghost.PK) {
-            const pkStr = String(ghost.PK);
-            const dateMatch = pkStr.match(/#(\d{8})(_|$)/) || pkStr.match(/#(\d{4}-\d{2}-\d{2})(_|$)/);
-            if (dateMatch) {
-              const rawDatePart = dateMatch[1];
-              if (rawDatePart.length === 8) {
-                // Format YYYYMMDD
-                const y = rawDatePart.substring(0, 4);
-                const m = rawDatePart.substring(4, 6);
-                const d = rawDatePart.substring(6, 8);
-                ghostDateRaw = new Date(`${y}-${m}-${d}`);
-              } else {
-                // Format YYYY-MM-DD
-                ghostDateRaw = new Date(rawDatePart);
-              }
-            }
-          }
-
-          if (ghostDateRaw) {
-            const ghostDate = ghostDateRaw instanceof Date ? ghostDateRaw : new Date(ghostDateRaw);
-            if (!isNaN(ghostDate.getTime()) && ghostDate.getTime() < targetBoundaryDate.getTime()) {
-              myLog("info", "ImportTable [Boundary Guard]: Excluded ghost entry PK '%s' with date %s (precedes boundary date %s)", 
-                ghost.PK, ghostDate.toISOString().split('T')[0], targetBoundaryDate.toISOString().split('T')[0]);
-              return false;
-            }
-          }
-          return true;
-        });
-
-        if (withinWindow.length > 0) {
-          myLog("info", "Injecting %d new manual entries (Ghost Rows) for %s", withinWindow.length, this.longName);
-          const labels = this.getLabels();
-          
-          // Build a set of all keys in the full sheet to check for existence outside the window
-          const fullSheetKeys = new Set();
-          if (this.sheet) {
-            this._initializeKeyMetadata();
-            const keyMetadata = this._keyMetadata;
-            const lastRow = this.sheet.getLastRow();
-            const labelRow = Number(this.getProperty("LabelRow")) || 1;
-            const startRow = labelRow + 1;
-            if (lastRow >= startRow) {
-              if (keyMetadata.type === "single") {
-                const keyCol = keyMetadata.offset + 1;
-                const values = this.sheet.getRange(startRow, keyCol, lastRow - startRow + 1, 1).getValues();
-                values.forEach(valArr => {
-                  const rawVal = valArr[0];
-                  if (rawVal !== undefined && rawVal !== "") {
-                    const key = String(TypeUtils.castType(rawVal, keyMetadata.fieldType) || "").trim().toLowerCase();
-                    if (key) fullSheetKeys.add(key);
-                  }
-                });
-              } else {
-                const lastCol = this.sheet.getLastColumn();
-                const fullData = this.sheet.getRange(startRow, 1, lastRow - startRow + 1, lastCol).getValues();
-                fullData.forEach(row => {
-                  const key = this.getRowKey(row);
-                  if (key) fullSheetKeys.add(key.toLowerCase());
-                });
-              }
-            }
-          }
-
-          withinWindow.forEach(ghost => {
-            const ghostPKLower = String(ghost.PK).trim().toLowerCase();
-            const existingRowOff = this.getHashKeyMap().get(ghostPKLower);
-            
-            if (existingRowOff !== undefined) {
-              const existingRowArray = this.getWindow()[existingRowOff];
-              const existingObj = labels.reduce((obj, label, colOff) => {
-                obj[label] = existingRowArray[colOff];
-                return obj;
-              }, {});
-              const mergedObj = Object.assign({}, existingObj, ghost);
-              targetObjects.push(mergedObj);
-            } else if (fullSheetKeys.has(ghostPKLower)) {
-              // Row already exists in the sheet outside the current target window: skip to avoid duplicates/blanks
-              myLog("info", "ImportTable [Ghost Injection]: Skipped ghost entry PK '%s' because it already exists in the sheet outside the target window.", ghost.PK);
-            } else {
-              // Truly new manual entry: inject it
-              targetObjects.push(ghost);
-            }
-          });
-        }
-      }
-    }
+    // Query the Patch Layer (PatchManager) for manual entries (Ghost Rows) that don't match
+    // any active records in the source sheet, and inject them into our target list.
+    this._injectGhostRows(targetObjects, targetBoundaryDate, dateFieldName);
 
     // 4. Serialize results
     const newData = this._serializeObjectsToMatrix(targetObjects);
@@ -231,23 +150,102 @@ class ImportTable extends UpdateTable {
   }
 
   /**
+   * Evaluates and injects manual override "Ghost Rows" from the PatchManager.
+   * Ghost rows are manual entries/corrections that do not exist in the source payload.
+   * 
+   * If a ghost row's key already exists within the target window, it is merged with the existing row.
+   * If it is a completely new record, it is appended to targetObjects.
+   *
+   * @param {Array<Object>} targetObjects - The collection of calculated row objects.
+   * @param {Date|null} targetBoundaryDate - The boundary date threshold to exclude historical records.
+   * @param {string} dateFieldName - The field name of the date column.
+   * @private
+   */
+  _injectGhostRows(targetObjects, targetBoundaryDate, dateFieldName) {
+    if (typeof PatchManager === 'undefined') return;
+
+    // Retrieve unused patches for this table (meaning patches not matched to active source records)
+    const unused = PatchManager.getUnusedPatches(this.longName);
+    if (unused.length === 0) return;
+
+    // 1. Filter out ghost entries that fall before the boundary date window
+    const withinWindow = unused.filter(ghost => {
+      if (!targetBoundaryDate) return true;
+
+      // A. Extract date from standard date field properties
+      let ghostDateRaw = ghost[dateFieldName];
+      
+      // B. Fallback: Parse date from PK string if formatted as Table#YYYYMMDD or Table#YYYY-MM-DD
+      if (!ghostDateRaw && ghost.PK) {
+        const pkStr = String(ghost.PK);
+        const dateMatch = pkStr.match(/#(\d{8})(_|$)/) || pkStr.match(/#(\d{4}-\d{2}-\d{2})(_|$)/);
+        if (dateMatch) {
+          const rawDatePart = dateMatch[1];
+          if (rawDatePart.length === 8) {
+            const y = rawDatePart.substring(0, 4);
+            const m = rawDatePart.substring(4, 6);
+            const d = rawDatePart.substring(6, 8);
+            ghostDateRaw = new Date(`${y}-${m}-${d}`);
+          } else {
+            ghostDateRaw = new Date(rawDatePart);
+          }
+        }
+      }
+
+      if (ghostDateRaw) {
+        const ghostDate = ghostDateRaw instanceof Date ? ghostDateRaw : new Date(ghostDateRaw);
+        if (!isNaN(ghostDate.getTime()) && ghostDate.getTime() < targetBoundaryDate.getTime()) {
+          myLog("info", "ImportTable [Boundary Guard]: Excluded ghost entry PK '%s' with date %s (precedes boundary date %s)", 
+            ghost.PK, ghostDate.toISOString().split('T')[0], targetBoundaryDate.toISOString().split('T')[0]);
+          return false;
+        }
+      }
+      return true;
+    });
+
+    if (withinWindow.length === 0) return;
+
+    myLog("info", "Injecting %d new manual entries (Ghost Rows) for %s", withinWindow.length, this.longName);
+    const labels = this.getLabels();
+    
+    // 2. Process each eligible ghost row using only the cached active window map
+    withinWindow.forEach(ghost => {
+      const ghostPKLower = String(ghost.PK).trim().toLowerCase();
+      const existingRowOff = this.getHashKeyMap().get(ghostPKLower);
+      
+      if (existingRowOff !== undefined) {
+        // Case A: The ghost row key exists in our active write window.
+        // Retrieve and merge fields, overwriting with ghost manual updates.
+        const existingRowArray = this.getWindow()[existingRowOff];
+        const existingObj = labels.reduce((obj, label, colOff) => {
+          obj[label] = existingRowArray[colOff];
+          return obj;
+        }, {});
+        const mergedObj = Object.assign({}, existingObj, ghost);
+        targetObjects.push(mergedObj);
+      } else {
+        // Case B: Truly new manual transaction within this window. Insert it directly.
+        targetObjects.push(ghost);
+      }
+    });
+  }
+
+  /**
    * [PIPELINE PHASE 1]: Data Generation
    * Calculates the initial raw values for a row based on formulas.
    */
   _calculateRow(sourceRow, rowOff, context, plan, sourceSheet) {
-    const calc = {};
-    this._executePlan(calc, sourceRow, rowOff, context, plan, sourceSheet);
-    return calc;
+    return this._executePlan({}, sourceRow, rowOff, context, plan, sourceSheet);
   }
 
   /**
    * The Core Execution Engine.
-   * Runs a specific plan against a provided calc object.
+   * Runs a specific plan against a provided calc object, returning a new object containing the calculated fields.
    */
-  _executePlan(calc, sourceRow, rowOff, context, plan, sourceSheet) {
+  _executePlan(initialCalc, sourceRow, rowOff, context, plan, sourceSheet) {
     const sourceLabels = sourceSheet ? sourceSheet.getLabels() : [];
-    for (let i = 0; i < plan.length; i++) {
-      const step = plan[i];
+    
+    return plan.reduce((calc, step) => {
       const targetField = step.targetField;
       
       const rawResult = step.isSimple 
@@ -255,12 +253,15 @@ class ImportTable extends UpdateTable {
         : step.compiledFormula(rowOff, calc, context, context.props, sourceRow, sourceLabels);
       
       const fieldType = Registry.getType(this.longName, targetField);
-      calc[targetField] = TypeUtils.castType(rawResult, fieldType);
+      const castVal = TypeUtils.castType(rawResult, fieldType);
       
       // Border Guard: Perimeter Validation
       const physicalRow = rowOff + (sourceSheet.firstDataRowIndex || 2);
-      TypeUtils.validate(calc[targetField], fieldType, { sheet: this.longName, row: physicalRow, col: targetField });
-    }
+      TypeUtils.validate(castVal, fieldType, { sheet: this.longName, row: physicalRow, col: targetField });
+      
+      calc[targetField] = castVal;
+      return calc;
+    }, { ...initialCalc });
   }
 
   /**
@@ -279,13 +280,13 @@ class ImportTable extends UpdateTable {
 
   /**
    * [PIPELINE PHASE 3]: Patching
-   * Applies manual corrections from the PatchManager (Audit Layer).
+   * Applies manual corrections from the PatchManager (Patch Layer).
    */
   _applyGlobalPatches(calc) {
     if (typeof PatchManager !== 'undefined') {
       const patch = PatchManager.getPatch(this.longName, calc.PK);
       if (patch) {
-        myLog("info", "Audit Layer: Applying global patch to %s [PK: %s]", this.longName, calc.PK);
+        myLog("info", "Patch Layer: Applying global patch to %s [PK: %s]", this.longName, calc.PK);
         Object.assign(calc, patch);
       }
     }
@@ -336,32 +337,39 @@ class ImportTable extends UpdateTable {
       })
       .filter(rule => rule !== null);
 
-    // 2. Compile and store formulas
-    parsedRules.forEach(({ targetField, formula }) => {
+    // 2. Compile custom formulas
+    const compiledEntries = parsedRules.reduce((acc, { targetField, formula }) => {
       try {
         const parsedFormula = FormulaUtils.parse(formula, sourceLongName, targetField, this.longName);
         myLog("trace", "Formula Engine: Compiling %s -> %s", targetField, parsedFormula);
-        this._rawFormulaMap.set(targetField, formula);
-        this._compiledFormulaMap.set(targetField, new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return ' + parsedFormula));
+        acc.raw.push([targetField, formula]);
+        acc.compiled.push([targetField, new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return ' + parsedFormula)]);
       } catch (e) {
         myLog("error", "Failed to compile formula for %s: %s", targetField, e.message);
       }
-    });
+      return acc;
+    }, { raw: [], compiled: [] });
 
     // 3. Auto-fill missing targets with implicit defaults
-    this.getLabels().forEach(targetField => {
-      if (!this._compiledFormulaMap.has(targetField)) {
+    const compiledFields = new Set(compiledEntries.compiled.map(([field]) => field));
+    const defaultEntries = this.getLabels().reduce((acc, targetField) => {
+      if (!compiledFields.has(targetField)) {
         try {
           const formula = `[${targetField}]`;
           const parsedFormula = FormulaUtils.parse(formula, sourceLongName, targetField, this.longName);
           myLog("trace", "Formula Engine: Compiling Default %s -> %s", targetField, parsedFormula);
-          this._rawFormulaMap.set(targetField, formula);
-          this._compiledFormulaMap.set(targetField, new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return ' + parsedFormula));
+          acc.raw.push([targetField, formula]);
+          acc.compiled.push([targetField, new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return ' + parsedFormula)]);
         } catch (e) {
           myLog("error", "Failed to compile default formula for %s: %s", targetField, e.message);
         }
       }
-    });
+      return acc;
+    }, { raw: [], compiled: [] });
+
+    // Re-instantiate the maps functionally using the accumulated entry arrays
+    this._rawFormulaMap = new Map([...compiledEntries.raw, ...defaultEntries.raw]);
+    this._compiledFormulaMap = new Map([...compiledEntries.compiled, ...defaultEntries.compiled]);
 
     // 4. Resolve filtering logic
     const filterFormula = this.getProperty("NewFilter");
