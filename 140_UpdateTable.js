@@ -158,7 +158,7 @@ class UpdateTable extends Table {
     // Physical column is 1-indexed (colOffset + 1)
     const physicalCol = sortColOffset + 1;
     const numRows = lastRow - this.firstDataRowIndex + 1;
-    const numCols = this.sheet.getLastColumn();
+    const numCols = this.getLastColumnIndex();
 
     if (numRows > 0 && numCols > 0) {
       const range = this.sheet.getRange(this.firstDataRowIndex, 1, numRows, numCols);

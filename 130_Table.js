@@ -569,7 +569,7 @@ class Table extends Sheet {
     
     const startRow = (Number(this.getProperty("LabelRow")) || 1) + 1;
     const endRow = this.sheet.getMaxRows();
-    const lastCol = this.sheet.getLastColumn();
+    const lastCol = this.getLastColumnIndex();
     
     if (endRow < startRow || lastCol === 0) return;
     
@@ -614,7 +614,7 @@ class Table extends Sheet {
     }
 
     // Fetch only the date column for efficiency
-    const lastRow = this.sheet.getLastRow();
+    const lastRow = this.getLastRowIndex();
     
     let labelRow = Number(this.getProperty("LabelRow"));
     if (isNaN(labelRow) || labelRow === undefined || labelRow === null) {

@@ -14,6 +14,18 @@ class UnionTable extends Table {
   }
 
   /**
+   * Lifecycle Override: Hooks into the base Table constructor schema setup.
+   * Eagerly resolves virtual source sub-sheets and compiles the combined schema.
+   */
+  initializeHeaderMap() {
+    // 1. Run base Table header map on the physical config sheet
+    super.initializeHeaderMap();
+
+    // 2. Eagerly load source sheets and build boundaries
+    this._ensureSources();
+  }
+
+  /**
    * Orchestration: Resolves all source table instances from the physical sheet.
    */
   _ensureSources() {
@@ -24,26 +36,16 @@ class UnionTable extends Table {
     const configData = [...this._window]; 
     this.clearCache(); // Reset so Union logic can take over this._window later
 
-    // 2. Fetch headers from physical sheet (Row 1)
-    const lastCol = this.sheet.getLastColumn();
-    if (lastCol === 0) {
-      throw new Error(`UnionTable Failure: The physical configuration sheet for ${this.longName} is completely empty.`);
-    }
-    const headers = this.sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-    const sourceColOffset = headers.findIndex(h => String(h).trim().toLowerCase() === "source");
-
+    // 2. Resolve the "Source" column offset using the inherited base header map
+    const sourceColOffset = this.getColOffset("Source");
     if (sourceColOffset === -1) {
       throw new Error(`UnionTable Failure: The physical configuration sheet for ${this.longName} is missing the required 'Source' column.`);
     }
 
-    // 3. Extract source names
-    const sourceNames = [];
-    configData.forEach(row => {
-      const sourceName = row[sourceColOffset];
-      if (sourceName && String(sourceName).trim() !== "") {
-        sourceNames.push(String(sourceName).trim());
-      }
-    });
+    // 3. Extract source names functionally using map and filter
+    const sourceNames = configData
+      .map(row => String(row[sourceColOffset] || "").trim())
+      .filter(sourceName => sourceName !== "");
 
     if (sourceNames.length === 0) {
       throw new Error(`UnionTable Failure: No sources defined in the 'Source' column of ${this.longName}.`);
@@ -68,10 +70,11 @@ class UnionTable extends Table {
     });
 
     this._isInitialized = true;
-    this._labels = null; // Clear the physical ["Source"] label so getLabels() rebuilds the virtual schema
+    this._labels = null; // Clear the physical config labels
+    this.getLabels();    // Eagerly build virtual combined labels
     
     // Calculate initial combined length for logging
-    const totalRows = this._sourceInstances.reduce((sum, s) => sum + s.windowDataLength, 0);
+    const totalRows = this._sourceInstances.reduce((total, instance) => total + instance.windowDataLength, 0);
     myLog("info", "UnionTable %s: Initialized with %d sources (%d total rows detected). Sources: %s", 
       this.longName, this._sourceInstances.length, totalRows, sourceNames.join(", "));
   }
@@ -82,14 +85,11 @@ class UnionTable extends Table {
    * @returns {string} The sheet name (e.g. "Cash").
    */
   getSourceName(rowOff) {
-    this._ensureSources();
     const boundary = this._boundaries.find(b => rowOff >= b.start && rowOff <= b.end);
     return boundary ? boundary.name : "";
   }
 
   getWindow() {
-    this._ensureSources();
-    
     const unionLabels = this.getLabels();
     
     // Concatenate all windows, but align their columns to the unionLabels!
@@ -132,9 +132,8 @@ class UnionTable extends Table {
    * Physical Row count helper.
    */
   getLastRowIndex() {
-    this._ensureSources();
-    const totalDataRows = this._sourceInstances.reduce((sum, source) => {
-      return sum + source.windowDataLength;
+    const totalDataRows = this._sourceInstances.reduce((total, instance) => {
+      return total + instance.windowDataLength;
     }, 0);
     
     return (this.firstDataRowIndex - 1) + totalDataRows;
@@ -144,7 +143,6 @@ class UnionTable extends Table {
    * Overrides getLabels to reflect the union of schemas from all sources.
    */
   getLabels() {
-    this._ensureSources();
     if (!this._labels || this._labels.length === 0) {
       const allLabels = new Set();
       allLabels.add("Source");
