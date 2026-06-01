@@ -147,7 +147,7 @@ class Sheet {
       if (range.numRows <= 0) return;
 
       // 4. Orchestrate Load
-      if (!this._isFetched) {
+      if (!this._isFetched || this._windowStartRow === null || this._window.length === 0) {
         // Build the initial window
         // Returns void (Mutates this._window and this._windowStartRow in-place)
         this._performInitialFetch(range);

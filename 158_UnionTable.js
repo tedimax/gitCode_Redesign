@@ -8,9 +8,11 @@
 class UnionTable extends Table {
   constructor(ss, longName, properties = {}) {
     super(ss, longName, properties);
-    this._sourceInstances = [];
-    this._boundaries = []; // { name, start, end }
-    this._isInitialized = false;
+    if (this._isInitialized === undefined) {
+      this._sourceInstances = [];
+      this._boundaries = []; // { name, start, end }
+      this._isInitialized = false;
+    }
   }
 
   /**
@@ -30,6 +32,8 @@ class UnionTable extends Table {
    */
   _ensureSources() {
     if (this._isInitialized) return;
+    if (!this._sourceInstances) this._sourceInstances = [];
+    if (!this._boundaries) this._boundaries = [];
 
     // 1. Fetch physical config data (bypassing overridden getWindow)
     Sheet.prototype.fetch.call(this, this.firstDataRowIndex);
@@ -129,9 +133,17 @@ class UnionTable extends Table {
   }
 
   /**
-   * Physical Row count helper.
+   * Overrides Table/Sheet fetch to bypass physical cell range reads for virtual UnionTables.
    */
+  fetch(startRow = null, numRows = null) {
+    myLog("trace", "UnionTable %s: fetch called (startRow=%s, numRows=%s). Bypassing to virtual window loading.", this.longName, startRow, numRows);
+    this.getWindow();
+  }
+
   getLastRowIndex() {
+    if (!this._isInitialized) {
+      return Sheet.prototype.getLastRowIndex.call(this);
+    }
     const totalDataRows = this._sourceInstances.reduce((total, instance) => {
       return total + instance.windowDataLength;
     }, 0);
@@ -147,15 +159,17 @@ class UnionTable extends Table {
       const allLabels = new Set();
       allLabels.add("Source");
       allLabels.add("PK");
-      this._sourceInstances.forEach(source => {
-        const sourceLabels = source.getLabels();
-        myLog("info", "UnionTable Source [%s] labels: %s", source.longName, JSON.stringify(sourceLabels));
-        sourceLabels.forEach(label => {
-          if (label) {
-            allLabels.add(String(label).trim());
-          }
+      if (this._isInitialized && this._sourceInstances) {
+        this._sourceInstances.forEach(source => {
+          const sourceLabels = source.getLabels();
+          myLog("info", "UnionTable Source [%s] labels: %s", source.longName, JSON.stringify(sourceLabels));
+          sourceLabels.forEach(label => {
+            if (label) {
+              allLabels.add(String(label).trim());
+            }
+          });
         });
-      });
+      }
       this._labels = Array.from(allLabels);
       this._columnMap = new Map(
         this._labels.map((label, offset) => [label, offset])

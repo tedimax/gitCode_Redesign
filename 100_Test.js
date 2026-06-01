@@ -290,5 +290,81 @@ function debugRawRowDetail() {
   }
 }
 
+function debugMergedAccountRows() {
+  initialize();
+  myLog("info", "=== debugMergedAccountRows ===");
+  try {
+    const table = Utils.getSheetInstance("AnnualSummaries_Merged");
+    const lastRow = table.getLastRowIndex();
+    myLog("info", "Physical last row index of Merged: %d", lastRow);
+    const cols = table.getSymbolicOffsets();
+    myLog("info", "Columns offsets: %s", JSON.stringify(cols));
+    
+    // Read the window
+    const data = table.getWindow();
+    myLog("info", "Window length: %d", data.length);
+    
+    // Find ACCOUNT rows
+    const entryTypeOff = cols.entryType;
+    const fyOff = cols.fy;
+    const accountOff = cols.account;
+    const balanceOff = cols.balance;
+    const lastBalanceOff = cols.lastBalance;
+    const clearedOff = cols.cleared;
+    
+    let count = 0;
+    data.forEach((row, idx) => {
+      const type = String(row[entryTypeOff] || "").trim().toUpperCase();
+      if (type === "ACCOUNT") {
+        count++;
+        myLog("info", "Row %d (idx %d): FY=%s, Account=%s, Balance=%s, LastBalance=%s, Cleared=%s", 
+          idx + table.firstDataRowIndex, 
+          idx,
+          row[fyOff], 
+          row[accountOff], 
+          row[balanceOff], 
+          row[lastBalanceOff], 
+          row[clearedOff]
+        );
+      }
+    });
+    myLog("info", "Total ACCOUNT rows found in window: %d", count);
+  } catch (e) {
+    myLog("error", "Error: %s", e.message);
+  }
+}
+
+function debugMergedSourcesAndColumns() {
+  initialize();
+  myLog("info", "=== debugMergedSourcesAndColumns ===");
+  try {
+    const sheetsTable = globals.sheetsObj;
+    const mergeSheetsRaw = sheetsTable.lookupValue("LongName", "SourceSheets", "AnnualSummaries_Merged")
+                       || sheetsTable.lookupValue("LongName", "SourceSheet",  "AnnualSummaries_Merged")
+                       || sheetsTable.lookupValue("LongName", "MergeSheets",  "AnnualSummaries_Merged");
+    
+    myLog("info", "SourceSheets Raw: %s", mergeSheetsRaw);
+    if (!mergeSheetsRaw) return;
+    
+    const sourceNames = String(mergeSheetsRaw).split(",").map(s => s.trim());
+    sourceNames.forEach((name, idx) => {
+      try {
+        const instance = getSheetInstance(name);
+        if (instance) {
+          const labels = instance.getLabels();
+          myLog("info", "Source %d: %s | Labels: %s", idx, name, JSON.stringify(labels));
+        } else {
+          myLog("warn", "Source %d: %s | Could not resolve instance", idx, name);
+        }
+      } catch (e) {
+        myLog("error", "Source %d: %s | Error: %s", idx, name, e.message);
+      }
+    });
+  } catch (e) {
+    myLog("error", "Error: %s", e.message);
+  }
+}
+
+
 
 

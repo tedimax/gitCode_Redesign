@@ -102,16 +102,12 @@ function _triggerDownstreamSheets(longName) {
  * Defaults to the current FY based on the 1st April rule.
  */
 function _promptForYear() {
-  const now = new Date();
-  const currentYear = now.getFullYear();
-  const defaultYear = (now.getMonth() < 3) ? currentYear - 1 : currentYear;
-  
   const ui = SpreadsheetApp.getUi();
-  const response = ui.prompt('Set Import Window', `Enter Financial Year (e.g., 2023) or leave blank for FY${defaultYear}:`, ui.ButtonSet.OK_CANCEL);
+  const response = ui.prompt('Set Import Window', 'Enter Financial Year (e.g., 2023) or leave blank for a FULL import:', ui.ButtonSet.OK_CANCEL);
   
   if (response.getSelectedButton() !== ui.Button.OK) return null;
   const val = response.getResponseText().trim();
-  return val ? Number(val) : defaultYear;
+  return val ? Number(val) : "FULL";
 }
 
 /**
@@ -119,7 +115,7 @@ function _promptForYear() {
  */
 function _calculateAndSaveWindow(longName, year) {
   initialize();
-  myLog("info", "Setting Import Window for %s (FY%d)", longName, year);
+  myLog("info", "Setting Import Window for %s (%s)", longName, year === "FULL" ? "FULL" : "FY" + year);
   
   try {
     const config = Registry.getSheetConfig(longName);
@@ -138,12 +134,17 @@ function _calculateAndSaveWindow(longName, year) {
     // 1. Calculate Rows
     let firstRow, lastRow;
     
-    const targetDate = new Date(year - 1, 3, 1); // 1st April (Start of the Financial Year)
-
-    const dateFieldName = config.DateField || "Date"; // Pull from Registry
-    let calculatedFirstRow = table.calculateFirstRowByDate(targetDate, dateFieldName);
-    lastRow = table.sheet.getLastRow();
-    firstRow = calculatedFirstRow;
+    if (year === "FULL") {
+      const labelRow = Number(config.LabelRow || config.labelrow || 1);
+      firstRow = labelRow + 1;
+      lastRow = table.sheet.getLastRow();
+    } else {
+      const targetDate = new Date(year - 1, 3, 1); // 1st April (Start of the Financial Year)
+      const dateFieldName = config.DateField || "Date"; // Pull from Registry
+      let calculatedFirstRow = table.calculateFirstRowByDate(targetDate, dateFieldName);
+      lastRow = table.sheet.getLastRow();
+      firstRow = calculatedFirstRow;
+    }
 
     // 2. Resolve Registry Columns
     const sheetsTable = globals.sheetsObj;

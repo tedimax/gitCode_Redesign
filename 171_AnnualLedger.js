@@ -107,11 +107,13 @@ class AnnualLedger {
     
     myLog("info", "AnnualLedger: Initializing scan for %s (Physical Rows: %d, Data starts at: %d)", this.sourceTable.longName, lastRow, absoluteStart);
     myLog("info", "AnnualLedger: Labels -> %s", this.sourceTable.getLabels().join(", "));
-    myLog("info", "AnnualLedger: Column Offsets -> FY: Col %s, Account: Col %s, Amount: Col %s, Cleared: Col %s", 
+    myLog("info", "AnnualLedger: Column Offsets -> FY: Col %s, Account: Col %s, Amount: Col %s, Cleared: Col %s, LastBalance: Col %s, Balance: Col %s", 
       StringUtils.columnToLetter(this.sourceCols.fy), 
       StringUtils.columnToLetter(this.sourceCols.account), 
       StringUtils.columnToLetter(this.sourceCols.amount), 
-      StringUtils.columnToLetter(this.sourceCols.cleared));
+      StringUtils.columnToLetter(this.sourceCols.cleared),
+      StringUtils.columnToLetter(this.sourceCols.lastBalance),
+      StringUtils.columnToLetter(this.sourceCols.balance));
 
     let isFinished = false;
     let chunkStart = Math.max(absoluteStart, lastRow - 1000 + 1);
@@ -130,7 +132,8 @@ class AnnualLedger {
       for (let i = endIdx; i >= startIdx; i--) {
         const row = data[i];
         const pRow = windowStart + i;
-        const rowFY = String(row[this.sourceCols.fy] || "").trim();
+        let rowFY = String(row[this.sourceCols.fy] || "").trim();
+        if (rowFY.length > 4) rowFY = rowFY.substring(0, 4);
         if (!rowFY) continue;
 
         if (i === endIdx) {
@@ -156,7 +159,8 @@ class AnnualLedger {
         if (rowFY === targetFY) {
           targetAccounts.add(accName);
         } else if (rowFY === prevFY) {
-          if (type === "ACCOUNT" && (row[this.sourceCols.lastBalance] === true || row[this.sourceCols.lastBalance] === "true")) {
+          const isLastBalance = row[this.sourceCols.lastBalance] === true || String(row[this.sourceCols.lastBalance]).trim().toUpperCase() === "TRUE";
+          if (type === "ACCOUNT" && isLastBalance) {
             resolvedBalances.add(accName);
           }
         }
@@ -180,22 +184,29 @@ class AnnualLedger {
    * Internal Core: Ingests a single row into the state.
    */
   _ingestRow(row, rowNum) {
-    const isCleared = (row[this.sourceCols.cleared] === true || String(row[this.sourceCols.cleared]).toUpperCase() === "TRUE");
-    const rowFY = String(row[this.sourceCols.fy] || "");
+    const type = (row[this.sourceCols.entryType] || "").trim().toUpperCase();
+    const isCleared = (row[this.sourceCols.cleared] === true || String(row[this.sourceCols.cleared]).trim().toUpperCase() === "TRUE");
+    let rowFY = String(row[this.sourceCols.fy] || "").trim();
+    if (rowFY.length > 4) rowFY = rowFY.substring(0, 4);
     
-    if (!isCleared) return;
+    // Only activity entries require cleared status. Account balance snapshots are always ingested.
+    if (type === "ACTIVITY" && !isCleared) return;
+    if (type !== "ACTIVITY" && type !== "ACCOUNT") return; // Safety check
 
     const amount = Number(row[this.sourceCols.amount] || 0);
     const accName = row[this.sourceCols.account];
-    const type = (row[this.sourceCols.entryType] || "").toUpperCase();
     const state = this._getYearState(rowFY);
     const yearlyAccountState = this._getYearlyAccountState(state, accName);
 
     if (type === "ACCOUNT") {
+      const isLastBalance = row[this.sourceCols.lastBalance] === true || String(row[this.sourceCols.lastBalance]).trim().toUpperCase() === "TRUE";
+      const rawBal = row[this.sourceCols.balance];
+// Log suppressed for ACCOUNT rows
+
       const accountMeta = this._cachedFacts.globalAccountMeta.get(accName);
       if (accountMeta && !accountMeta.pk) accountMeta.pk = row[this.sourceCols.pk];
 
-      if (row[this.sourceCols.lastBalance] === true || row[this.sourceCols.lastBalance] === "true") {
+      if (isLastBalance) {
         yearlyAccountState.balCurrent = Number(row[this.sourceCols.balance] || 0);
       }
     } else if (type === "ACTIVITY") {

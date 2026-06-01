@@ -304,7 +304,7 @@ function markAllDirty() {
  */
 function setAllWindows() {
   const year = _promptForYear();
-  if (!year) return;
+  if (year === null) return;
   
   initialize();
   const sheetsTable = globals.sheetsObj;
@@ -344,7 +344,10 @@ function setAllWindows() {
     });
   }
   
-  SpreadsheetApp.getUi().alert(`Finished setting windows for all ${calculatedCount} target, manual entry, and summary sheets for FY${year}.`);
+  const msg = (year === "FULL")
+    ? `Finished setting windows for all ${calculatedCount} target, manual entry, and summary sheets to FULL IMPORT.`
+    : `Finished setting windows for all ${calculatedCount} target, manual entry, and summary sheets for FY${year}.`;
+  SpreadsheetApp.getUi().alert(msg);
 }
 
 /**

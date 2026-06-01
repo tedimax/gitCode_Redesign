@@ -77,10 +77,12 @@ class Table extends Sheet {
    * Stores both the ordered array and the lookup map for O(1) retrieval.
    */
   initializeHeaderMap() {
-    const labelRow = this.getProperty("LabelRow");
+    const labelRowRaw = this.getProperty("LabelRow");
+    // Coerce to a number to ensure type-safe comparison (e.g. string "0" vs number 0)
+    const labelRow = (labelRowRaw === null || labelRowRaw === undefined || labelRowRaw === "") ? 1 : Number(labelRowRaw);
     
     // 1. Capture and trim labels in their physical order (Skip if LabelRow is 0)
-    const rawLabels = (labelRow === 0) ? [] : this._fetchHeaderRow(labelRow || 1);
+    const rawLabels = (labelRow === 0) ? [] : this._fetchHeaderRow(labelRow);
     this._labels = rawLabels.map(label => String(label || "").trim());
     
     // 2. Build the lookup map functionally (Label -> Offset)
@@ -92,7 +94,7 @@ class Table extends Sheet {
     
     // 3. Fail Fast: If no physical labels found but LabelRow is not 0, throw an error!
     if (this._columnMap.size === 0 && labelRow !== 0) {
-      throw new Error(`[Schema Error: ${this.longName}] Physical sheet has no headers at row ${labelRow || 1}. ` +
+      throw new Error(`[Schema Error: ${this.longName}] Physical sheet has no headers at row ${labelRow}. ` +
         `The columnMap MUST be derived from physical headers. Please add headers to the sheet or set LabelRow to 0 in the Registry.`);
     } else if (labelRow === 0) {
       myLog("trace", "Table %s: Confirmed as Raw/Output sheet (LabelRow=0).", this.longName);
@@ -243,6 +245,11 @@ class Table extends Sheet {
    * Overrides Sheet.fetch to apply Incremental Strict Typing and Perimeter Validation.
    */
   fetch(startRow = null, numRows = null) {
+    if (this.constructor.name === "UnionTable") {
+      myLog("trace", "UnionTable %s: fetch called (startRow=%s, numRows=%s). Bypassing to virtual window loading.", this.longName, startRow, numRows);
+      this.getWindow();
+      return;
+    }
     try {
       super.fetch(startRow, numRows);
       if (this.windowDataLength === 0) return;

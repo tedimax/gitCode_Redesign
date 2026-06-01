@@ -257,6 +257,19 @@ var FormulaUtils = {
       sourceNames = [defaultSource];
     }
 
+    // Expand UnionTable source names if there is only 1 source and it's a UnionTable
+    if (sourceNames.length === 1 && typeof getSheetInstance !== 'undefined') {
+      const sourceInstance = getSheetInstance(sourceNames[0]);
+      if (sourceInstance && sourceInstance.constructor.name === "UnionTable") {
+        if (typeof sourceInstance._ensureSources === 'function') {
+          sourceInstance._ensureSources();
+        }
+        if (sourceInstance._sourceInstances && sourceInstance._sourceInstances.length > 0) {
+          sourceNames = sourceInstance._sourceInstances.map(s => s.longName);
+        }
+      }
+    }
+
     // 3. Build the exact [sourceName, colName] pairs
     const overrideMap = new Map();
     if (hasSheetNames) {
@@ -620,6 +633,18 @@ var FormulaUtils = {
       // Vertical Merge: Concatenates columns from multiple tables
       verticalMerge: (rowOff, ...sources) => {
         // sources: Array of [longName, colName]
+        const actualSourceName = context.getSourceName(rowOff);
+        if (actualSourceName) {
+          const match = sources.find(([longName]) => {
+            return longName === actualSourceName || 
+                   longName.replace(/^ImportsArchive_|^Ledgers_/, "") === actualSourceName.replace(/^ImportsArchive_|^Ledgers_/, "") ||
+                   longName.split("_").pop() === actualSourceName.split("_").pop();
+          });
+          if (match) {
+            return driver.getValueByLabel(rowOff, match[1]);
+          }
+        }
+
         let currentBoundary = 0;
         for (const [longName, colName] of sources) {
           const instance = getCachedInstance(longName);

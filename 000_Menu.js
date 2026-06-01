@@ -81,5 +81,6 @@ function onOpen() {
     .addSubMenu(rangeMenu)
     .addSeparator()
     .addItem('🧪 Run Prototype Test', 'test_PrototypeImport')
+    .addItem('🔍 Debug Merged Sources', 'debugMergedSourcesAndColumns')
     .addToUi();
 }
