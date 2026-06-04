@@ -164,10 +164,10 @@ class ReconcileTable extends ReconcileProcessor {
     const { groupsTable, mergedTable, logTable } = this._prefetchDestinationTables();
 
     // 3. Stage updates for Merged, Groups, and Log tables
-    const { groupsNewData, logNewData, mergedBatches } = this._stageGroupUpdates(balancedTxs, groupsTable, mergedTable, logTable);
+    const { txsWithGlobalIds, groupsNewData, logNewData, mergedBatches } = this._stageGroupUpdates(balancedTxs, groupsTable, mergedTable, logTable);
 
     // 4. Stage updates for originating Ledgers
-    const ledgerBatches = this._stageLedgerUpdates(balancedTxs);
+    const ledgerBatches = this._stageLedgerUpdates(txsWithGlobalIds);
 
     // ==========================================
     // PHASE 2: COMMIT (Write-Only)
@@ -230,7 +230,18 @@ class ReconcileTable extends ReconcileProcessor {
     const ledgerBatches = new Map();
 
     txsByLedger.forEach((txList, ledgerName) => {
-      const ledger = getSheetInstance(ledgerName);
+      // Force the ledger table to load from row 2 (full load) so we can find and update
+      // historical/out-of-window transactions.
+      const config = Registry.getSheetConfig(ledgerName);
+      const fullConfig = { ...config, FirstRow: 2, firstrow: 2 };
+      
+      const ssName = config.SpreadSheetName || ledgerName.split("_")[0];
+      const ssid = globals.ssMap.get(ssName) || globals.defaultSSID;
+      const ss = getSpreadsheetInstance(ssid);
+      
+      const type = config.SheetType || "Table";
+      const Constructor = globals.tableMap[type] || globals.tableMap['Table'];
+      const ledger = new Constructor(ss, ledgerName, fullConfig);
 
       if (ledger.getColOffset("Group") === -1) {
         throw new Error(`CRITICAL: Ledger '${ledgerName}' has no 'Group' column. Cannot write back reconciliation group ID.`);
@@ -257,7 +268,7 @@ class ReconcileTable extends ReconcileProcessor {
         }
       });
 
-      ledgerBatches.set(ledgerName, { groupOffsetsByVal, fyOffsetsByVal });
+      ledgerBatches.set(ledgerName, { ledger, groupOffsetsByVal, fyOffsetsByVal });
     });
 
     return ledgerBatches;
@@ -270,7 +281,7 @@ class ReconcileTable extends ReconcileProcessor {
    */
   _executeLedgerBatchUpdates(ledgerBatches) {
     ledgerBatches.forEach((batches, ledgerName) => {
-      const ledger = getSheetInstance(ledgerName);
+      const ledger = batches.ledger;
 
       batches.groupOffsetsByVal.forEach((offsets, groupId) => {
         ledger.setBatchedValuesByLabel("Group", groupId, offsets);

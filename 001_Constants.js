@@ -5,7 +5,8 @@
  * All system-wide fixed values go here.
  */
 const CONFIG_CONSTANTS = {
-  VERSION: "v1.1.18-debug",
+  VERSION: "v1.1.24-symbolic-20260601-1317",
+  LOG_LEVEL: "info",
   ANCHOR_SSID: "13Uv4dP6fSnEyrU1GXvKvgKziLakeuWTjXOZiyNpFlPU", // NewAccounts SSID
   SHEETS_CONFIG_NAME: "NewAccounts_Sheets",
   DATATYPES_SHEET_NAME: "NewAccounts_DataTypes",
@@ -13,6 +14,19 @@ const CONFIG_CONSTANTS = {
   SHEETS_CONFIG_PK: "LongName",
   DATATYPES_CONFIG_PK: "TargetField",
   FORMULAS_CONFIG_PK: "TargetField",
+  HISTORICAL_PREFIX_MAP: {
+    "SqFee": "Ledgers_SquareFees",
+    "SqPay": "Ledgers_SquarePayments",
+    "SqDep": "Ledgers_SquareDeposits",
+    "SqTx": "Ledgers_SquareTransactions",
+    "Tx": "Ledgers_Transactions",
+    "Bank": "Ledgers_Bank",
+    "Cash": "Ledgers_Cash",
+    "Asset": "Ledgers_Assets",
+    "Book": "Ledgers_Bookings",
+    "Transaction": "Ledgers_GeneratedTransactions",
+    "Hundred": "Ledgers_GeneratedTransactions"
+  },
   CORRECTIONS_SHEET_NAME: "NewAccounts_Corrections",
   CORRECTIONS_CONFIG_PK: "GlobalID",
   DEFAULT_FIRST_ROW: 2,
@@ -64,7 +78,8 @@ const CONFIG_CONSTANTS = {
     
     // Summary Sheets
     { label: "🔗 Merged", longName: "AnnualSummaries_Merged" },
-    { label: "🔍 Unchecked", longName: "AnnualSummaries_UnChecked" }
+    { label: "🔍 Unchecked", longName: "AnnualSummaries_UnChecked" },
+    { label: "🔄 Reconcile", longName: "AnnualSummaries_NewReconcile" }
   ],
 
   // Dependency Map: When Key is imported, mark all values as Pending (Process = TRUE)
@@ -98,6 +113,7 @@ const CONFIG_CONSTANTS = {
     
     // Merged -> Unchecked Link
     "AnnualSummaries_Merged": ["AnnualSummaries_UnChecked"],
+    "AnnualSummaries_UnChecked": ["AnnualSummaries_NewReconcile"],
     
     // Manual Entry Dependencies
     "ManualEntry_Ledger": ["AnnualSummaries_Merged"],
@@ -109,7 +125,24 @@ const CONFIG_CONSTANTS = {
   MANDATORY_TABLE_FIELDS: ["PK", "Amount", "Account", "FY", "Category", "Group", "EntryType"],
 
   // Required symbolic mappings for the AnnualLedger fact engine
-  LEDGER_MANDATORY_SYMBOLS: ["fy", "account", "amount", "cleared", "entryType", "category", "pk"]
+  LEDGER_MANDATORY_SYMBOLS: ["fy", "account", "amount", "cleared", "entryType", "category", "pk"],
+
+  // Setmore / Tuya configuration defaults
+  SETMORE_REFRESH_TOKEN: "r1/32d63238a2MOPtQc-CtAnlGSU1WGi4BSp0LY5oZTI76lV",
+  SETMORE_PAST: -7,
+  SETMORE_FUTURE: 30,
+  SETMORE_STAFF_NAME: "Booking",
+  TUYA_PIN_LENGTH: 8,
+  ONE_DAY_IN_SECONDS: 86400,
+  TWO_DAYS_IN_SECONDS_MINUS_ONE: 172799,
+  TUYA_PHASES: {
+    0: "Deleted",
+    1: "Not synced",
+    2: "Synced",
+    3: "Expired",
+    4: "Deleted",
+    7: "To be deleted"
+  }
 };
 
 /**
@@ -187,6 +220,41 @@ const TABLE_COLUMN_MAP = {
     dateEnd: "DateEnd",
     interval: "Interval",
     unit: "Unit"
+  },
+  "Keys_SetmoreBookings": {
+    key: "Key",
+    start: "Start",
+    end: "End",
+    duration: "Duration",
+    email: "Email",
+    comment: "Comment",
+    customer: "Customer",
+    encryptedPin: "EncryptedPIN"
+  },
+  "Keys_TemporaryBookings": {
+    email: "Email",
+    encryptedPin: "EncryptedPIN",
+    start: "Start"
+  },
+  "Keys_TuyaLogs": {
+    id: "id",
+    updateTime: "update_time"
+  },
+  "Keys_TuyaTempPINS": {
+    id: "id",
+    effectiveTime: "effective_time",
+    invalidTime: "invalid_time",
+    deliveryStatus: "delivery_status",
+    phase: "phase"
+  },
+  "Keys_IssuedPINS": {
+    id: "id",
+    encryptedPin: "encryptedPIN",
+    name: "name",
+    appointmentTime: "appointment_time",
+    effectiveTime: "effective_time",
+    invalidTime: "invalid_time",
+    issued: "Issued"
   }
 };
 
@@ -276,5 +344,10 @@ const REPORT_LAYOUT = {
       _defineNamedRangeForSheet(item.longName);
     };
   });
+
+  // 3. Generate Current Year Run Stub
+  scope[`runCurrentYear`] = function() {
+    _runAnnualReportForYear(currentFY);
+  };
 
 })(this);

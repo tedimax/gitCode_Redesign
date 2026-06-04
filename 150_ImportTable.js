@@ -127,6 +127,8 @@ class ImportTable extends UpdateTable {
     const unused = PatchManager.getUnusedPatches(this.longName);
     if (unused.length === 0) return;
 
+    let excludedGhostCount = 0;
+
     // 1. Filter out ghost entries that fall before the boundary date window
     const withinWindow = unused.filter(ghost => {
       if (!targetBoundaryDate) return true;
@@ -154,13 +156,19 @@ class ImportTable extends UpdateTable {
       if (ghostDateRaw) {
         const ghostDate = ghostDateRaw instanceof Date ? ghostDateRaw : new Date(ghostDateRaw);
         if (!isNaN(ghostDate.getTime()) && ghostDate.getTime() < targetBoundaryDate.getTime()) {
-          myLog("info", "ImportTable [Boundary Guard]: Excluded ghost entry PK '%s' with date %s (precedes boundary date %s)", 
+          excludedGhostCount++;
+          myLog("trace", "ImportTable [Boundary Guard]: Excluded ghost entry PK '%s' with date %s (precedes boundary date %s)", 
             ghost.PK, ghostDate.toISOString().split('T')[0], targetBoundaryDate.toISOString().split('T')[0]);
           return false;
         }
       }
       return true;
     });
+
+    if (excludedGhostCount > 0 && targetBoundaryDate) {
+      myLog("info", "ImportTable [Boundary Guard]: Excluded %d ghost entries preceding boundary date %s", 
+        excludedGhostCount, targetBoundaryDate.toISOString().split('T')[0]);
+    }
 
     if (withinWindow.length === 0) return;
 

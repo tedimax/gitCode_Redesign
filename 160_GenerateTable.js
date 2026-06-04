@@ -38,6 +38,18 @@ class GenerateTable extends ImportTable {
       const parsedFormula = FormulaUtils.parse("pk2([PK], eventDate())", sourceLongName, "PK", this.longName);
       this._compiledFormulaMap.set("PK", new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return ' + parsedFormula));
     }
+
+    if (labels.includes("Group") && !this._compiledFormulaMap.has("Group")) {
+      myLog("trace", "GenerateTable: Injecting fallback formula for Group");
+      this._rawFormulaMap.set("Group", 'targetVal("Group", calc.PK)');
+      this._compiledFormulaMap.set("Group", new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return utils.targetVal("Group", calc)'));
+    }
+
+    if (labels.includes("Cleared") && !this._compiledFormulaMap.has("Cleared")) {
+      myLog("trace", "GenerateTable: Injecting fallback formula for Cleared");
+      this._rawFormulaMap.set("Cleared", 'targetVal("Cleared", calc.PK)');
+      this._compiledFormulaMap.set("Cleared", new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return utils.targetVal("Cleared", calc)'));
+    }
   }
 
   /**

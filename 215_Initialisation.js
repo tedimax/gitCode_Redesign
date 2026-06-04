@@ -80,6 +80,7 @@ const Registry = (() => {
   const _sheetsByName = new Map(); // SheetName -> Config Object
   const _formulas = new Map();  // LongName -> Array of Formula Rows
   const _dataTypes = new Map(); // LongName:Column -> Type String
+  const _prefixToLongName = new Map(); // Prefix -> LongName
 
   return {
     /**
@@ -102,9 +103,14 @@ const Registry = (() => {
     },
 
     hydrate() {
+      // 0. Reset prefix map
+      _prefixToLongName.clear();
+
       // 1. Index Sheets
       if (globals.sheetsObj) {
         const labels = globals.sheetsObj.getLabels();
+        const cols = globals.sheetsObj.getSymbolicOffsets();
+        
         globals.sheetsObj.getWindow().forEach((row, idx) => {
           const config = globals.sheetsObj.getRowObjectByOffset(idx);
           
@@ -125,12 +131,31 @@ const Registry = (() => {
             const trimmedLongName = String(config.LongName).trim();
             _sheets.set(trimmedLongName, config);
             
-            const sheetName = (config.SheetName || trimmedLongName.split('_').slice(1).join('_')).trim();
+            const sheetName = String(config.SheetName || trimmedLongName.split('_').slice(1).join('_')).trim();
             _sheetsByName.set(sheetName, config);
+
+            // Populate prefix map dynamically from KeyPrefix configuration
+            if (cols.keyPrefix !== -1) {
+              const keyPrefixRaw = row[cols.keyPrefix];
+              if (keyPrefixRaw) {
+                String(keyPrefixRaw).split(",").forEach(p => {
+                  const prefixClean = p.trim();
+                  if (prefixClean) {
+                    _prefixToLongName.set(prefixClean, trimmedLongName);
+                  }
+                });
+              }
+            }
           } else {
             myLog("warn", "Registry: Found row with missing LongName at index %d", idx);
           }
         });
+      }
+
+      // 1.5. Apply/enrich prefix map with historical overrides (ensures overrides take precedence)
+      const historical = CONFIG_CONSTANTS.HISTORICAL_PREFIX_MAP || {};
+      for (const [pref, longName] of Object.entries(historical)) {
+        _prefixToLongName.set(String(pref).trim(), String(longName).trim());
       }
 
       // 2. Index Formulas (Grouped by Table)
@@ -146,7 +171,38 @@ const Registry = (() => {
 
           const match = fullRef.match(/^([^\[]+)\[(.*?)\]/);
           if (match) {
-            const longName = match[1].trim();
+            const parsedName = match[1].trim();
+            let longName = parsedName;
+            
+            // Resolve case-insensitively against registered sheets to find the official case-sensitive LongName
+            const lowerParsed = parsedName.toLowerCase();
+            let resolved = null;
+            for (const key of _sheets.keys()) {
+              if (key.toLowerCase() === lowerParsed) {
+                resolved = key;
+                break;
+              }
+            }
+            if (resolved) {
+              longName = resolved;
+            } else {
+              // If not found by LongName, try to match by SheetName (case-insensitively) to resolve its LongName
+              for (const [sName, conf] of _sheetsByName.entries()) {
+                if (sName.toLowerCase() === lowerParsed) {
+                  resolved = conf.LongName;
+                  break;
+                }
+              }
+              if (resolved) {
+                longName = resolved;
+              } else {
+                // Fail Fast: The target sheet referenced in the formulas tab is not configured anywhere in the registry.
+                throw new Error(`Registry Hydration Error: Formula target '${fullRef}' references sheet '${parsedName}', ` +
+                  `which is not configured in the 'NewAccounts_Sheets' Registry.\n\n` +
+                  `👉 Action Required: Please verify the sheet name in the formulas table or configure '${parsedName}' in the Sheets configuration.`);
+              }
+            }
+
             const fieldName = match[2].trim();
             if (!_formulas.has(longName)) _formulas.set(longName, []);
             
@@ -191,6 +247,18 @@ const Registry = (() => {
       return config;
     },
     getSheetConfigBySheetName: (sheetName) => _sheetsByName.get(String(sheetName || "").trim()),
+    getLongNameByPrefix(prefix) {
+      if (!prefix) return null;
+      const cleanPrefix = String(prefix).trim();
+      let match = _prefixToLongName.get(cleanPrefix);
+      if (match) return match;
+      
+      const lowerPrefix = cleanPrefix.toLowerCase();
+      for (const [p, name] of _prefixToLongName.entries()) {
+        if (p.toLowerCase() === lowerPrefix) return name;
+      }
+      return null;
+    },
     getFormulasFor: (longName) => {
       const formulas = _formulas.get(longName) || [];
       if (formulas.length === 0) {

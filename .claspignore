@@ -13,3 +13,4 @@ package-lock.json
 README.md
 .gitignore
 *.d.ts
+scratch/**

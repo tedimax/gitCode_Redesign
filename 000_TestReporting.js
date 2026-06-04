@@ -26,7 +26,7 @@ function test_SingleYearReport() {
     });
 
     // 3. Import the Data
-    const matrix = service.importData(targetYear);
+    const matrix = service.prepare(targetYear);
 
     // 4. Write to a NEW test sheet
     _writeToNewTestSheet(ss, `TEST_Annual_${targetYear}`, matrix);

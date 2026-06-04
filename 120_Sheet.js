@@ -37,7 +37,7 @@ class Sheet {
       throw new Error(`Naming Failure: The longName "${longName}" is invalid. It must follow the "Spreadsheet_Sheet" convention (e.g., "Ledgers_Bank") or have an explicit "SheetName" override in the Registry.`);
     }
     const [ssContext, sheetContext] = nameParts;
-    this.sheetName = this._config.sheetname || sheetContext;
+    this.sheetName = String(this._config.sheetname || sheetContext).trim();
     this.sheet = ss.getSheetByName(this.sheetName);
     
     if (!this.sheet) {
@@ -179,8 +179,8 @@ class Sheet {
     
     const count = (numRows === undefined || numRows === null) ? Math.max(0, physicalLastRow - resolvedStart + 1) : numRows;
     
-    myLog("trace", "Sheet [%s] Dimension Audit: startRow=%d, physicalLastRow=%d", 
-      this.longName, resolvedStart, physicalLastRow);
+    // myLog("trace", "Sheet [%s] Dimension Audit: startRow=%d, physicalLastRow=%d", 
+    //   this.longName, resolvedStart, physicalLastRow);
       
     return { start: resolvedStart, numRows: count, lastCol: lastCol };
   }

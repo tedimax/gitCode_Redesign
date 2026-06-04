@@ -208,6 +208,7 @@
       let dependencyMap = {};
       const userSelected = new Set();
       const userDeselected = new Set();
+      let activeBatch = new Set();
 
       // Load data on startup
       window.onload = () => {
@@ -215,19 +216,13 @@
       };
 
       function loadData() {
-        google.script.run
-          .withSuccessHandler(configs => {
-            sheetConfigs = configs;
-            google.script.run
-              .withSuccessHandler(map => {
-                dependencyMap = map;
-                populateList();
-              })
-              .withFailureHandler(handleError)
-              .getSheetDependencyMap();
-          })
-          .withFailureHandler(handleError)
-          .getCoreSheetConfigs();
+        try {
+          sheetConfigs = <?!= sheetConfigsJson ?>;
+          dependencyMap = <?!= dependencyMapJson ?>;
+          populateList();
+        } catch (e) {
+          handleError(e);
+        }
       }
 
       function populateList() {
@@ -310,6 +305,11 @@
           });
         }
         
+        // Ensure running/pending items in the active batch remain selected
+        activeBatch.forEach(item => {
+          finalSelected.add(item);
+        });
+        
         // Update checkbox states, classes, and badges
         sheetConfigs.forEach(config => {
           const longName = config.longName;
@@ -362,6 +362,8 @@
         status.style.display = 'block';
         
         let hasError = false;
+        activeBatch = new Set(selected);
+        reevaluateUI();
 
         for (const longName of selected) {
           status.innerText = `Processing ${longName}...`;
@@ -374,11 +376,8 @@
                 .runRepairSingle(longName);
             });
             
-            // Success: Untick the checkbox
-            const chk = document.getElementById(`chk_${longName}`);
-            if (chk) chk.checked = false;
-            
-            // Remove from selected sets so it doesn't stay badged
+            // Success: Remove from activeBatch and selected sets
+            activeBatch.delete(longName);
             userSelected.delete(longName);
             userDeselected.delete(longName);
             reevaluateUI();

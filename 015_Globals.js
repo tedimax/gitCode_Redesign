@@ -34,6 +34,25 @@ const globals = {
 
 // Logger (Placeholder until full util implemented)
 function myLog(level, msg, ...args) {
+  const levels = { "all": 0, "trace": 0, "debug": 1, "info": 2, "warn": 3, "error": 4, "none": 5 };
+  
+  let logSetting = null;
+  if (typeof PropertiesService !== 'undefined') {
+    try {
+      logSetting = PropertiesService.getScriptProperties().getProperty("LOG_LEVEL");
+    } catch (e) {
+      // Suppress properties fetch errors in headless environments
+    }
+  }
+  
+  if (!logSetting) {
+    logSetting = (typeof CONFIG_CONSTANTS !== 'undefined' && CONFIG_CONSTANTS.LOG_LEVEL) || "info";
+  }
+  
+  const minLevel = levels[String(logSetting).toLowerCase().trim()] ?? 2;
+  const currentLevel = levels[String(level).toLowerCase().trim()] ?? 2;
+  if (currentLevel < minLevel) return;
+
   if (level === "error") console.error(msg, ...args);
   else console.log(msg, ...args);
 }

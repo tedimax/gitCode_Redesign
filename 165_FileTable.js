@@ -67,7 +67,11 @@ class FileTable extends UpdateTable {
       }
 
       // 2. Proceed with standard data persistence
-      return super.persist(newData, mode);
+      // For FileTable, we always force "replace" mode because a file ingest is a 1:1 replacement of the Drive file content.
+      // If we use update/add mode, it causes logic bugs because the RAM window represents the Drive file, not the Sheet.
+      const forcedMode = "replace";
+      myLog("info", "FileTable %s: Forcing persistence mode to '%s' (ignoring requested '%s').", this.longName, forcedMode, mode);
+      return super.persist(newData, forcedMode);
     }
     myLog("info", "FileTable %s: No physical sheet attached. persist() skipped.", this.longName);
     return { added: 0, updated: 0, removed: 0 };

@@ -53,7 +53,16 @@ class ReconcileProcessor extends ReconcileBuilder {
     // We bypass full type validation to avoid errors when reading these cells.
     groupsTable.withoutValidation();
 
-    const mergedTable = getSheetInstance("AnnualSummaries_Merged");
+    // Force the Merged table to be loaded as a standard physical Table starting at row 2 (full load)
+    // rather than a virtual UnionTable, so that row offsets correspond to actual physical cells.
+    const config = Registry.getSheetConfig("AnnualSummaries_Merged");
+    const physicalConfig = { ...config, SheetType: "Table", FirstRow: 2, firstrow: 2 };
+    
+    const ssName = config.SpreadSheetName || "AnnualSummaries";
+    const ssid = globals.ssMap.get(ssName) || globals.defaultSSID;
+    const ss = getSpreadsheetInstance(ssid);
+    
+    const mergedTable = new Table(ss, "AnnualSummaries_Merged", physicalConfig);
     const logTable = getSheetInstance("NewAccounts_ReconcileLog");
 
     return { groupsTable, mergedTable, logTable };
@@ -82,7 +91,7 @@ class ReconcileProcessor extends ReconcileBuilder {
     // 3. Accumulate logical batch updates for the Merged sheet
     const mergedBatches = this._buildMergedTableBatchUpdates(txsWithGlobalIds, mergedTable);
 
-    return { groupsNewData, logNewData, mergedBatches };
+    return { txsWithGlobalIds, groupsNewData, logNewData, mergedBatches };
   }
 
   /**
@@ -249,35 +258,17 @@ class ReconcileProcessor extends ReconcileBuilder {
    * @returns {string|null} Long name of the ledger, or the prefix itself as a fallback.
    */
   _getLedgerNameFromPrefix(prefix) {
-    if (!this._prefixCacheMap) {
-      this._prefixCacheMap = new Map();
-    }
-    if (this._prefixCacheMap.has(prefix)) {
-      return this._prefixCacheMap.get(prefix);
-    }
-
-    let targetLongName = null;
-    const mergeSheetsRaw = globals.sheetsObj.lookupValue("LongName", "SourceSheets", "AnnualSummaries_Merged")
-                       || globals.sheetsObj.lookupValue("LongName", "SourceSheet",  "AnnualSummaries_Merged")
-                       || globals.sheetsObj.lookupValue("LongName", "MergeSheets",  "AnnualSummaries_Merged");
-    if (!mergeSheetsRaw) {
-      this._prefixCacheMap.set(prefix, prefix);
-      return prefix;
-    }
-
-    const mergeSheets = String(mergeSheetsRaw).split(",").map(s => s.trim());
-    const sheetCols   = globals.sheetsObj.getSymbolicOffsets();
-
-    globals.sheetsObj.getWindow().forEach(row => {
-      const name  = row[sheetCols.longName];
-      const prefs = String(row[sheetCols.keyPrefix] || "").split(",").map(p => p.trim());
-      if (prefs.includes(prefix) && mergeSheets.includes(name)) {
-        targetLongName = name;
-      }
-    });
-
-    const result = targetLongName || prefix;
-    this._prefixCacheMap.set(prefix, result);
-    return result;
+    if (!prefix) return null;
+    const target = Registry.getLongNameByPrefix(prefix) || prefix;
+    
+    // Redirect active manual entry tables to their corresponding ledgers.
+    // The manual entry sheets themselves are purely for data entry and are never written to by the program.
+    const redirections = {
+      "ManualEntry_Ledger": "Ledgers_Transactions",
+      "ManualEntry_Holdings": "Ledgers_Assets",
+      "ManualEntry_Cashbox": "Ledgers_Cash"
+    };
+    
+    return redirections[target] || target;
   }
 }

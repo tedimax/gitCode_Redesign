@@ -114,6 +114,9 @@ class ReconcileRenderer {
    * Restores the complex array formulas to the first data row of the Reconcile sheet.
    */
   restoreFormulas() {
+    // Recalculate named ranges for the sheet to cover the new dimensions
+    this.table.writeNamedRanges();
+
     const formulas = {};
     const base = StringUtils.toRangeName(this.table.sheetName);
     const mergedConfig = Registry.getSheetConfig("AnnualSummaries_Merged");

@@ -18,61 +18,71 @@ function onOpen() {
   // FY is labelled by its END year (e.g. Apr 2026 - Mar 2027 = FY2027)
   const currentFY = (now.getMonth() >= 3) ? currentYear + 1 : currentYear;
 
-  // 1. Annual Reports Submenu (Dynamic)
-  const singleYearMenu = ui.createMenu('📅 Single Year Run');
-  for (let y = 2016; y <= currentFY; y++) {
-    singleYearMenu.addItem(String(y), `runYear${y}`);
-  }
-
-  const annualMenu = ui.createMenu('Annual Reports')
-    .addItem('🚀 Run Annual Report (Active)', 'runActiveAnnualSheet')
-    .addItem(`🔄 Run All Years (2016-${currentFY})`, 'runAllAnnualReports')
+  // 1. Reconcile Submenu
+  const reconMenu = ui.createMenu('Reconcile')
+    .addItem('🆕 Start new reconciliation', 'vh.startReconciliation')
+    .addItem('💾 Save reconciliation entries', 'vh.saveReconciliation')
     .addSeparator()
-    .addSubMenu(singleYearMenu);
+    .addItem('🔧 Recover missing Group IDs', 'vh.recoverReconciliationData');
 
-  // 2. Reconciliation Submenu
-  const reconMenu = ui.createMenu('Reconciliation')
-    .addItem('🆕 Start New Reconciliation', 'startReconciliation')
-    .addItem('🧹 Clear Reconciliation', 'clearReconciliation')
-    .addItem('💾 Save Reconciled Entries', 'saveReconciliation');
-
-  // 3. Import Submenu (Dynamic)
-  const namedImportMenu = ui.createMenu('Import Named Sheet');
-  const namedRangeMenu = ui.createMenu('Set Named Range for Sheet');
-
-  CONFIG_CONSTANTS.CORE_SHEET_CONFIG.forEach(item => {
-    const safeName = item.longName.replace(/[^a-zA-Z0-9]/g, '');
-    if (!item.longName.startsWith("ManualEntry_")) {
-      namedImportMenu.addItem(item.label, `importSheet${safeName}`);
-    }
-    namedRangeMenu.addItem(item.label, `defineSheet${safeName}`);
-  });
+  // 2. Import Submenu
+  const batchImportMenu = ui.createMenu('Batch import')
+    .addItem('⏳ Import pending sheets', 'vh.importPendingSheets')
+    .addItem('🔴 Set all sheets dirty', 'vh.markAllDirty')
+    .addItem('🟢 Set all sheets clean', 'vh.resetPendingSheets');
 
   const importMenu = ui.createMenu('Import')
-    .addItem('📄 Import Current Sheet', 'importActiveSheet')
-    .addItem('🛠️ Repair Manager...', 'showRepairManager')
-    .addSeparator()
-    .addItem('🏁 Set All Windows', 'setAllWindows')
-    .addSeparator()
-    .addSubMenu(namedImportMenu)
-    .addSeparator()
-    .addSubMenu(ui.createMenu('Batch Import')
-      .addItem('⏳ Import Pending Sheets', 'importPendingSheets')
-      .addItem('🟢 Set All Sheets Clean', 'resetPendingSheets')
-      .addItem('🔴 Set All Sheets Dirty', 'markAllDirty'));
+    .addItem('📄 Import current sheet', 'vh.importActiveSheet')
+    .addItem('🛠️ Repair manager', 'vh.showRepairManager')
+    .addSubMenu(batchImportMenu)
+    .addItem('🏁 Set all windows', 'vh.setAllWindows');
 
+  // 3. Set Ranges Submenu
+  const namedRangeMenu = ui.createMenu('Set named sheet range');
+  CONFIG_CONSTANTS.CORE_SHEET_CONFIG.forEach(item => {
+    const safeName = item.longName.replace(/[^a-zA-Z0-9]/g, '');
+    namedRangeMenu.addItem(item.label, `vh.defineSheet${safeName}`);
+  });
 
-  // 4. Set Ranges Submenu (Dynamic)
   const rangeMenu = ui.createMenu('Set Ranges')
-    .addItem('🏷️ Set Named Ranges (Active)', 'defineActiveSheetNamedRanges')
-    .addSeparator()
-    .addSubMenu(namedRangeMenu)
-    .addSeparator()
-    .addItem('📏 Set All Named Ranges', 'defineAllNamedRanges');
+    .addItem('🏷️ Set current sheet range', 'vh.defineActiveSheetNamedRanges')
+    .addItem('📏 Set all ranges', 'vh.defineAllNamedRanges')
+    .addSubMenu(namedRangeMenu);
+
+  // 4. Annual Reports Submenu
+  const runNamedYearMenu = ui.createMenu('Run named year');
+  for (let y = 2016; y <= currentFY; y++) {
+    runNamedYearMenu.addItem(String(y), `vh.runYear${y}`);
+  }
+
+  const annualMenu = ui.createMenu('Annual reports')
+    .addItem('📅 Run current year', 'vh.runCurrentYear')
+    .addItem('🔄 Run all years', 'vh.runAllAnnualReports')
+    .addItem('🚀 Run active sheet', 'vh.runActiveAnnualSheet')
+    .addSubMenu(runNamedYearMenu);
+
+  // 5. Keys Submenu
+  const syncSubMenu = ui.createMenu('Sync')
+    .addItem('🎟️ Sync PINs', 'vh.issueTempPINs')
+    .addItem('📅 Sync Calendar', 'vh.syncCalendar')
+    .addItem('🔑 Sync Temporary PINs', 'vh.syncTempPINS')
+    .addItem('🔒 Sync Permanent Locks', 'vh.syncTuyaLogs');
+
+  const keysMenu = ui.createMenu('Keys')
+    .addItem('🔄 Update PINS', 'vh.updatePINSFromCalendar')
+    .addSubMenu(syncSubMenu);
+
+  // 6. Trace Level Submenu
+  const traceLevelMenu = ui.createMenu('Trace level')
+    .addItem('All', 'vh.setLogLevelAll')
+    .addItem('Trace', 'vh.setLogLevelTrace')
+    .addItem('Info', 'vh.setLogLevelInfo')
+    .addItem('Error', 'vh.setLogLevelError')
+    .addItem('None', 'vh.setLogLevelNone');
 
   // Main Menu Assembly
   ui.createMenu('Village Hall')
-    .addSubMenu(annualMenu)
+    .addItem('🔑 Make keys in current sheet', 'vh.makeKeys')
     .addSeparator()
     .addSubMenu(reconMenu)
     .addSeparator()
@@ -80,7 +90,10 @@ function onOpen() {
     .addSeparator()
     .addSubMenu(rangeMenu)
     .addSeparator()
-    .addItem('🧪 Run Prototype Test', 'test_PrototypeImport')
-    .addItem('🔍 Debug Merged Sources', 'debugMergedSourcesAndColumns')
+    .addSubMenu(annualMenu)
+    .addSeparator()
+    .addSubMenu(keysMenu)
+    .addSeparator()
+    .addSubMenu(traceLevelMenu)
     .addToUi();
 }

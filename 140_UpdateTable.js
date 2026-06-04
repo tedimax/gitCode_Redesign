@@ -67,7 +67,10 @@ class UpdateTable extends Table {
    * @param {string} mode - 'replace', 'update', or 'add'. Defaults to instance override or props.importmethod.
    */
   persist(newData, mode = this._modeOverride || (this.getProperty("importmethod") || "replace")) {
-    myLog("info", "Persisting changes to %s using mode: %s", this.longName, mode);
+    const configMethod = this.getProperty("importmethod") || "replace";
+    const overrideMethod = this._modeOverride || "none";
+    myLog("info", "Table %s persistence routing -> Configured: '%s' | Override: '%s' | Final Mode: '%s'", 
+      this.longName, configMethod, overrideMethod, mode);
 
     // Fail-fast: Ensure newData is explicitly provided
     if (!newData) {

@@ -297,16 +297,12 @@ class Table extends Sheet {
           const val = TypeUtils.castType(cell, type);
           TypeUtils.validate(val, type, context);
           
-           // Only enforce mandatory fields for data tables, skip for system configuration sheets
-          const isConfigSheet = [
-            CONFIG_CONSTANTS.SHEETS_CONFIG_NAME,
-            CONFIG_CONSTANTS.DATATYPES_SHEET_NAME,
-            CONFIG_CONSTANTS.FORMULAS_SHEET_NAME,
-            CONFIG_CONSTANTS.CORRECTIONS_SHEET_NAME,
-            "NewAccounts_TestSheetDest"
-          ].includes(this.longName);
+          // Only enforce transaction-level mandatory field validation for actual financial ledger or merged/group sheets
+          const isTransactionTable = this.longName.startsWith("Ledgers_") || 
+                                     this.longName === "AnnualSummaries_Merged" || 
+                                     this.longName === "AnnualSummaries_UnChecked";
 
-          let isMandatory = !isConfigSheet && (CONFIG_CONSTANTS.MANDATORY_TABLE_FIELDS || []).includes(label);
+          let isMandatory = isTransactionTable && (CONFIG_CONSTANTS.MANDATORY_TABLE_FIELDS || []).includes(label);
           const entryType = entryTypeOff !== -1 ? String(row[entryTypeOff] || "").trim().toUpperCase() : "ACTIVITY";
 
           // Rule 1: Group is only mandatory once the row is Cleared
@@ -645,6 +641,60 @@ class Table extends Sheet {
       }
     }
     return lastRow; // Default to end if no future dates found
+  }
+
+  /**
+   * Generates and writes keys for rows that have dates but no keys.
+   */
+  makeKeys() {
+    const keyFieldName = this.getProperty("Key") || "PK";
+    const dateFieldName = this.getProperty("DateField") || "Date";
+    const keyPrefix = this.getProperty("KeyPrefix") || "";
+    
+    const keyOffset = this.getColOffset(keyFieldName);
+    const dateOffset = this.getColOffset(dateFieldName);
+    
+    if (keyOffset === -1) {
+      throw new Error(`[Table Error: ${this.longName}] Column '${keyFieldName}' not found.`);
+    }
+    if (dateOffset === -1) {
+      throw new Error(`[Table Error: ${this.longName}] Column '${dateFieldName}' not found.`);
+    }
+
+    let count = 0;
+    this.getWindow().forEach((row, rowOffset) => {
+      const keyVal = row[keyOffset];
+      const dateVal = row[dateOffset];
+      const hasDate = dateVal !== "" && dateVal !== null && dateVal !== undefined;
+      const hasNoKey = keyVal === "" || keyVal === null || keyVal === undefined;
+      
+      if (hasNoKey && hasDate) {
+        const newKey = this.makeKey(dateVal, keyPrefix);
+        const physicalRow = this.firstDataRowIndex + rowOffset;
+        this.sheet.getRange(physicalRow, keyOffset + 1).setValue(newKey);
+        this.set(rowOffset, keyOffset, newKey);
+        count++;
+      }
+    });
+
+    if (count > 0) {
+      myLog("info", "Generated and saved %d keys in %s", count, this.longName);
+      SpreadsheetApp.flush();
+    }
+  }
+
+  /**
+   * Generates a unique key based on date, prefix, and a random string.
+   */
+  makeKey(date = new Date(), prefix = "", length = 6) {
+    let d = (typeof date === 'string') ? new Date(date) : date;
+    const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let randStr = "";
+    for (let i = 0; i < length; i++) {
+      randStr += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return prefix + "#" + dateStr + "_" + randStr;
   }
 }
 

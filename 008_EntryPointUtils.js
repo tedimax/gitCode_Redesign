@@ -29,6 +29,7 @@ function _getReconciliationInstance() {
  */
 function _importNamedSheet(longName, forceUpdate = false, suppressAlerts = false) {
   initialize();
+  Registry.refresh();
   myLog("info", "Importing sheet: %s (Force Update: %s)", longName, forceUpdate);
   
   try {
