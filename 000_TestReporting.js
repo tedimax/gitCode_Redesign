@@ -128,3 +128,113 @@ function _writeToNewTestSheet(ss, name, matrix) {
   sheet.getRange(1, 1, matrix.length, matrix[0].length).setValues(matrix);
   return sheet;
 }
+
+/**
+ * Debugging utility to inspect the FY2027 Current account discrepancy of £29.99.
+ */
+function debugFY2027Discrepancy() {
+  initialize();
+  myLog("info", "Starting debug of FY2027 discrepancy...");
+  try {
+    // Look up NewFormulas sheet first
+    const formulaTable = getSheetInstance("NewAccounts_NewFormulas");
+    if (formulaTable) {
+      formulaTable.fetch(formulaTable.firstDataRowIndex);
+      const fData = formulaTable.getWindow();
+      const fLabels = formulaTable.getLabels();
+      myLog("info", `--- Printing NewAccounts_NewFormulas (Total: ${fData.length} rows, Labels: ${fLabels.join(", ")}) ---`);
+      fData.slice(0, 20).forEach((row, rIdx) => {
+        const rowDetails = fLabels.map((lbl, cIdx) => `${lbl}: "${row[cIdx]}"`).join(", ");
+        myLog("info", `Row ${rIdx + 2}: ${rowDetails}`);
+      });
+    }
+
+    const ss = _resolveAnnualSummariesSS();
+    const sheetName = "AnnualSummaries_Merged";
+    const table = getSheetInstance(sheetName);
+    
+    // Ensure all data is fetched
+    table.fetch(table.firstDataRowIndex);
+    const data = table.getWindow();
+    const cols = table.getSymbolicOffsets();
+    const winStart = table._windowStartRow;
+    
+    myLog("info", `Total rows fetched: ${data.length}, winStart: ${winStart}`);
+    
+    // Find all 'Current' account rows
+    const currentRows = [];
+    let sumClearedActivity2027 = 0;
+    let sumClearedAccount2027 = 0;
+    
+    data.forEach((row, idx) => {
+      const pRow = winStart + idx;
+      const acc = String(row[cols.account] || "").trim();
+      if (acc.toUpperCase() !== "CURRENT") return;
+      
+      const fy = String(row[cols.fy] || "").trim();
+      const type = String(row[cols.entryType] || "").trim().toUpperCase();
+      const cleared = (row[cols.cleared] === true || String(row[cols.cleared]).trim().toUpperCase() === "TRUE");
+      const amount = Number(row[cols.amount] || 0);
+      const isLastBal = (row[cols.lastBalance] === true || String(row[cols.lastBalance]).trim().toUpperCase() === "TRUE");
+      const balance = Number(row[cols.balance] || 0);
+      const pk = String(row[cols.pk] || "");
+      const date = String(row[cols.date] || "");
+      const desc = String(row[cols.description] || "");
+      const cat = String(row[cols.category] || "");
+      const grp = String(row[cols.group] || "");
+
+      const rowData = { pRow, fy, type, cleared, amount, isLastBal, balance, pk, date, desc, cat, grp };
+      currentRows.push(rowData);
+      
+      let matchedFY = fy;
+      if (matchedFY.length > 4) matchedFY = matchedFY.substring(0, 4);
+
+      if (matchedFY === "2027" && cleared) {
+        if (type === "ACTIVITY") {
+          sumClearedActivity2027 += amount;
+        } else if (type === "ACCOUNT") {
+          sumClearedAccount2027 += amount;
+        }
+      }
+    });
+    
+    myLog("info", `Sum of Cleared ACTIVITY for Current in FY2027: £${sumClearedActivity2027.toFixed(2)}`);
+    myLog("info", `Sum of Cleared ACCOUNT for Current in FY2027: £${sumClearedAccount2027.toFixed(2)}`);
+    
+    myLog("info", "--- ALL Cleared Rows for Current in FY2027 ---");
+    currentRows.forEach(r => {
+      let matchedFY = r.fy;
+      if (matchedFY.length > 4) matchedFY = matchedFY.substring(0, 4);
+      if (matchedFY === "2027" && r.cleared) {
+        myLog("info", `Row ${r.pRow}: FY=${r.fy}, Type=${r.type}, Amount=£${r.amount.toFixed(2)}, Group=${r.grp}, PK=${r.pk}`);
+      }
+    });
+    
+    // Find LastBalance rows for Current
+    const lastBals = currentRows.filter(r => r.isLastBal);
+    myLog("info", "--- Last Balance Rows for Current ---");
+    lastBals.forEach(r => {
+      myLog("info", `Row ${r.pRow}: FY=${r.fy}, Date=${r.date}, Balance=£${r.balance.toFixed(2)}, PK=${r.pk}`);
+    });
+    
+    // Find any rows with amount +/- 29.99
+    const match2999 = currentRows.filter(r => Math.abs(Math.abs(r.amount) - 29.99) < 0.01);
+    myLog("info", "--- Rows matching +/- 29.99 ---");
+    match2999.forEach(r => {
+      myLog("info", `Row ${r.pRow}: FY=${r.fy}, Type=${r.type}, Cleared=${r.cleared}, Date=${r.date}, Amount=£${r.amount.toFixed(2)}, PK=${r.pk}, Group=${r.grp}, Desc=${r.desc}`);
+    });
+    
+    // Let's also check if there are any rows around the FY2026/FY2027 transition
+    // E.g., rows from 10940 to 10950
+    myLog("info", "--- Detailed rows (10940 to 10950) ---");
+    currentRows.forEach(r => {
+      if (r.pRow >= 10940 && r.pRow <= 10950) {
+        myLog("info", `Row ${r.pRow}: FY=${r.fy}, Type=${r.type}, Cleared=${r.cleared}, Date=${r.date}, Amount=£${r.amount.toFixed(2)}, Balance=£${r.balance.toFixed(2)}, LastBal=${r.isLastBal}, PK=${r.pk}`);
+      }
+    });
+    
+  } catch (e) {
+    myLog("error", `Debug failed: ${e.message}`);
+    if (e.stack) myLog("error", e.stack);
+  }
+}

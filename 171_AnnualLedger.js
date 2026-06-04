@@ -188,15 +188,80 @@ class AnnualLedger {
     const isCleared = (row[this.sourceCols.cleared] === true || String(row[this.sourceCols.cleared]).trim().toUpperCase() === "TRUE");
     let rowFY = String(row[this.sourceCols.fy] || "").trim();
     if (rowFY.length > 4) rowFY = rowFY.substring(0, 4);
+
+    // Track uncleared activities before returning early
+    if (type === "ACTIVITY" && !isCleared) {
+      const state = this._getYearState(rowFY);
+      if (!state.unclearedEntries) state.unclearedEntries = [];
+      state.unclearedEntries.push({
+        rowNum: rowNum,
+        type: type,
+        pk: row[this.sourceCols.pk],
+        date: row[this.sourceCols.date],
+        amount: Number(row[this.sourceCols.amount] || 0),
+        desc: row[this.sourceCols.description] || "",
+        account: row[this.sourceCols.account]
+      });
+      return;
+    }
     
-    // Only activity entries require cleared status. Account balance snapshots are always ingested.
-    if (type === "ACTIVITY" && !isCleared) return;
     if (type !== "ACTIVITY" && type !== "ACCOUNT") return; // Safety check
 
     const amount = Number(row[this.sourceCols.amount] || 0);
     const accName = row[this.sourceCols.account];
     const state = this._getYearState(rowFY);
     const yearlyAccountState = this._getYearlyAccountState(state, accName);
+
+    // Track uncleared account entries
+    if (type === "ACCOUNT" && !isCleared) {
+      if (!state.unclearedEntries) state.unclearedEntries = [];
+      state.unclearedEntries.push({
+        rowNum: rowNum,
+        type: type,
+        pk: row[this.sourceCols.pk],
+        date: row[this.sourceCols.date],
+        amount: amount,
+        desc: row[this.sourceCols.description] || "",
+        account: accName
+      });
+    }
+
+    // Track reconciled group details
+    const groupVal = row[this.sourceCols.group];
+    const groupKey = groupVal !== undefined && groupVal !== null && groupVal !== "" ? String(groupVal).trim() : null;
+
+    if (groupKey && Number(groupKey) !== 0 && isCleared) {
+      if (!state.groups) state.groups = new Map();
+      if (!state.groups.has(groupKey)) {
+        state.groups.set(groupKey, { activitySum: 0, accountSum: 0, rows: [] });
+      }
+      const g = state.groups.get(groupKey);
+      g.rows.push({
+        rowNum: rowNum,
+        type: type,
+        pk: row[this.sourceCols.pk],
+        date: row[this.sourceCols.date],
+        amount: amount,
+        desc: row[this.sourceCols.description] || ""
+      });
+      if (type === "ACTIVITY") {
+        g.activitySum += amount;
+      } else if (type === "ACCOUNT") {
+        g.accountSum += amount;
+      }
+    } else if (isCleared) {
+      // Track cleared entries with no Group ID
+      if (!state.ungroupedCleared) state.ungroupedCleared = [];
+      state.ungroupedCleared.push({
+        rowNum: rowNum,
+        type: type,
+        pk: row[this.sourceCols.pk],
+        date: row[this.sourceCols.date],
+        amount: amount,
+        desc: row[this.sourceCols.description] || "",
+        account: accName
+      });
+    }
 
     if (type === "ACCOUNT") {
       const isLastBalance = row[this.sourceCols.lastBalance] === true || String(row[this.sourceCols.lastBalance]).trim().toUpperCase() === "TRUE";
@@ -268,7 +333,10 @@ class AnnualLedger {
         accounts: new Map(),
         categoryGroupStats: {},
         totals: { in: 0, out: 0, net: 0 },
-        ghosts: { net: 0, list: [] }
+        ghosts: { net: 0, list: [] },
+        groups: new Map(),
+        ungroupedCleared: [],
+        unclearedEntries: []
       });
     }
     return map.get(yearStr);

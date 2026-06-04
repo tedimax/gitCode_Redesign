@@ -736,7 +736,37 @@ var FormulaUtils = {
 
         myLog("info", "isLast Debug: Starting cache build. Total rows in window: %d.", _rowObjectsCache.length);
 
-        _rowObjectsCache.forEach((r, idx) => {
+        const sortField = (target && typeof target.getProperty === 'function') ? target.getProperty("SortField") : null;
+        const sortedIndices = Array.from({ length: _rowObjectsCache.length }, (_, idx) => idx);
+        
+        if (sortField) {
+          const sortColType = (target && typeof Registry !== 'undefined') ? Registry.getType(target.longName, sortField) : null;
+          sortedIndices.sort((a, b) => {
+            const valA = _rowObjectsCache[a][sortField];
+            const valB = _rowObjectsCache[b][sortField];
+            
+            let diff = 0;
+            if (valA instanceof Date || valB instanceof Date || sortColType === "Date" || sortColType === "DateTime") {
+              const dA = valA ? new Date(valA) : new Date(0);
+              const dB = valB ? new Date(valB) : new Date(0);
+              diff = dA.getTime() - dB.getTime();
+            } else if (typeof valA === 'number' && typeof valB === 'number') {
+              diff = valA - valB;
+            } else {
+              diff = String(valA || "").localeCompare(String(valB || ""));
+            }
+            
+            if (diff !== 0) return diff;
+            
+            // Tie-breaker: stable sort matching alphabetical sort by PK (to mirror Google Sheets' range.sort() behavior)
+            const pkA = String(_rowObjectsCache[a].PK || _rowObjectsCache[a].pk || "");
+            const pkB = String(_rowObjectsCache[b].PK || _rowObjectsCache[b].pk || "");
+            return pkA.localeCompare(pkB);
+          });
+        }
+
+        sortedIndices.forEach(idx => {
+          const r = _rowObjectsCache[idx];
           const passFilter = !filterFn || filterFn(r);
           if (passFilter) {
             const k = String(keyFn(r));
