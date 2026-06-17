@@ -48,21 +48,21 @@ class ReconcileProcessor extends ReconcileBuilder {
    * @returns {{ groupsTable: UpdateTable, mergedTable: Table, logTable: UpdateTable }}
    */
   _prefetchDestinationTables() {
-    const groupsTable = getSheetInstance("AnnualSummaries_Groups");
+    const groupsTable = getSheetInstance("Reconciliation_Groups");
     // Groups sheet may contain formula columns that return #N/A when unpopulated.
     // We bypass full type validation to avoid errors when reading these cells.
     groupsTable.withoutValidation();
 
     // Force the Merged table to be loaded as a standard physical Table starting at row 2 (full load)
     // rather than a virtual UnionTable, so that row offsets correspond to actual physical cells.
-    const config = Registry.getSheetConfig("AnnualSummaries_Merged");
+    const config = Registry.getSheetConfig(CONFIG_CONSTANTS.MERGED_TABLE_NAME);
     const physicalConfig = { ...config, SheetType: "Table", FirstRow: 2, firstrow: 2 };
     
-    const ssName = config.SpreadSheetName || "AnnualSummaries";
+    const ssName = config.SpreadSheetName || "Reconciliation";
     const ssid = globals.ssMap.get(ssName) || globals.defaultSSID;
     const ss = getSpreadsheetInstance(ssid);
     
-    const mergedTable = new Table(ss, "AnnualSummaries_Merged", physicalConfig);
+    const mergedTable = new Table(ss, CONFIG_CONSTANTS.MERGED_TABLE_NAME, physicalConfig);
     const logTable = getSheetInstance("NewAccounts_ReconcileLog");
 
     return { groupsTable, mergedTable, logTable };

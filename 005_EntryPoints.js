@@ -14,11 +14,12 @@ function makeKeys() {
   initialize();
   const activeSheet = SpreadsheetApp.getActiveSheet();
   const sheetName = activeSheet.getName();
+  const activeSsid = activeSheet.getParent().getId();
   
   myLog("info", "Generating keys for active sheet: %s", sheetName);
   
   try {
-    const config = Registry.getSheetConfigBySheetName(sheetName);
+    const config = Registry.getSheetConfigBySheetName(sheetName, activeSsid);
     if (!config) {
       throw new Error(`Sheet '${sheetName}' not found in the Registry.`);
     }
@@ -42,6 +43,59 @@ function makeKeys() {
     SpreadsheetApp.getUi().alert(`Key Generation Error: ${e.message}`);
   }
 }
+
+
+/**
+ * Entry Point: Removes identical duplicate rows from the active sheet based on their Primary Key,
+ * preserving only the first occurrence.
+ */
+function deduplicateActiveSheet() {
+  initialize();
+  const activeSheet = SpreadsheetApp.getActiveSheet();
+  const sheetName = activeSheet.getName();
+  const activeSsid = activeSheet.getParent().getId();
+  
+  myLog("info", "Deduplicating active sheet: %s", sheetName);
+  
+  try {
+    const config = Registry.getSheetConfigBySheetName(sheetName, activeSsid);
+    if (!config) {
+      throw new Error(`Sheet '${sheetName}' not found in the Registry.`);
+    }
+    
+    const longName = config.LongName;
+    const table = Utils.getSheetInstance(longName);
+    if (table && typeof table.deduplicate === 'function') {
+      const stats = table.deduplicate();
+
+      // Log each duplicate PK to SyncAudit
+      if (stats.duplicatePKs && stats.duplicatePKs.length > 0) {
+        stats.duplicatePKs.forEach(pk => {
+          AuditUtils.logError(longName, sheetName, "Deduplication", `Removed duplicate PK: ${pk}`, "", pk);
+        });
+        AuditUtils.flush();
+      }
+
+      let alertMsg = `Deduplication Complete:\n\n` +
+        `• Sheet: ${sheetName}\n` +
+        `• Rows Before: ${stats.beforeCount}\n` +
+        `• Rows After: ${stats.afterCount}\n` +
+        `• Duplicates Removed: ${stats.duplicatesRemoved}`;
+
+      if (stats.duplicatePKs && stats.duplicatePKs.length > 0) {
+        alertMsg += `\n\nDuplicate PKs:\n` + stats.duplicatePKs.map(pk => `  • ${pk}`).join('\n');
+      }
+
+      SpreadsheetApp.getUi().alert(alertMsg);
+    } else {
+      throw new Error(`Sheet '${sheetName}' (${longName}) does not support deduplication operations.`);
+    }
+  } catch (e) {
+    myLog("error", "Deduplication failed: %s", e.message);
+    SpreadsheetApp.getUi().alert(`Deduplication Error: ${e.message}`);
+  }
+}
+
 
 
 /**
@@ -69,11 +123,12 @@ function importActiveSheet() {
   initialize();
   const activeSheet = SpreadsheetApp.getActiveSheet();
   const sheetName = activeSheet.getName();
+  const activeSsid = activeSheet.getParent().getId();
   
   myLog("info", "Importing data for active sheet: %s", sheetName);
   
   try {
-    const config = Registry.getSheetConfigBySheetName(sheetName);
+    const config = Registry.getSheetConfigBySheetName(sheetName, activeSsid);
     if (!config) {
       throw new Error(`Sheet '${sheetName}' not found in the Registry.`);
     }
@@ -97,11 +152,12 @@ function defineActiveSheetNamedRanges() {
   initialize();
   const activeSheet = SpreadsheetApp.getActiveSheet();
   const sheetName = activeSheet.getName();
+  const activeSsid = activeSheet.getParent().getId();
   
   myLog("info", "Defining Named Ranges for active sheet: %s", sheetName);
   
   try {
-    const config = Registry.getSheetConfigBySheetName(sheetName);
+    const config = Registry.getSheetConfigBySheetName(sheetName, activeSsid);
     if (!config) {
       throw new Error(`Sheet '${sheetName}' not found in the Registry.`);
     }
@@ -386,18 +442,129 @@ function defineAllNamedRanges() {
  * Entry Point: Opens the Repair Manager Dialog.
  */
 function showRepairManager() {
+  initialize();
   const template = HtmlService.createTemplateFromFile('RepairManager');
   
   // Inject configuration data eagerly so client-side won't need to query them asynchronously
   template.sheetConfigsJson = JSON.stringify(getCoreSheetConfigs() || []);
   template.dependencyMapJson = JSON.stringify(getSheetDependencyMap() || {});
   
+  // Inject the current FY window year
+  let currentFYWindow = "FULL";
+  try {
+    currentFYWindow = getCurrentFYWindow();
+  } catch (e) {
+    myLog("warn", "Failed to retrieve current FY window: %s", e.message);
+  }
+  template.currentFYWindow = currentFYWindow;
+  
   const html = template.evaluate()
     .setWidth(450)
-    .setHeight(550)
+    .setHeight(620)
     .setTitle('🛠️ Repair Manager');
     
   SpreadsheetApp.getUi().showModalDialog(html, '🛠️ Repair Manager');
+}
+
+/**
+ * Server Function: Dynamically retrieves the current active Financial Year window year.
+ * Returns the 4-digit ending year convention (e.g. 2027), or "FULL" for all years.
+ */
+function getCurrentFYWindow() {
+  initialize();
+  const sheetsTable = globals.sheetsObj;
+  const deltaDateCol = sheetsTable.getColOffset("DeltaDate");
+  const fromFYCol = sheetsTable.getColOffset("FromFY");
+
+  if (deltaDateCol === -1 || fromFYCol === -1) {
+    return "FULL";
+  }
+
+  sheetsTable.fetchWindow();
+  
+  // Find the first sheet where DeltaDate is TRUE and FromFY has a value
+  for (let idx = 0; idx < sheetsTable.windowDataLength; idx++) {
+    const row = sheetsTable.getWindow()[idx];
+    const isWindowed = TypeUtils.isTrue(row[deltaDateCol]);
+    if (isWindowed) {
+      const fromFYRaw = row[fromFYCol];
+      if (fromFYRaw !== undefined && fromFYRaw !== null && fromFYRaw !== "") {
+        let fromFY = null;
+        if (fromFYRaw instanceof Date) {
+          const y = fromFYRaw.getFullYear();
+          const m = fromFYRaw.getMonth();
+          fromFY = (m >= 3) ? y + 1 : y;
+        } else if (typeof fromFYRaw === 'number') {
+          fromFY = fromFYRaw;
+        } else {
+          const parsedNum = Number(fromFYRaw);
+          if (!isNaN(parsedNum) && parsedNum > 0) {
+            fromFY = parsedNum;
+          } else {
+            const parsedDate = new Date(fromFYRaw);
+            if (!isNaN(parsedDate.getTime())) {
+              const y = parsedDate.getFullYear();
+              const m = parsedDate.getMonth();
+              fromFY = (m >= 3) ? y + 1 : y;
+            }
+          }
+        }
+        if (fromFY !== null && !isNaN(fromFY) && fromFY > 0) {
+          return fromFY;
+        }
+      }
+    }
+  }
+  return "FULL";
+}
+
+/**
+ * Server Function: Recalculates and updates the window offsets for all windowed sheets in the Registry.
+ * @param {string|number|null} yearVal - The target year (e.g. 2027) or null/empty for all years.
+ */
+function updateFYWindow(yearVal) {
+  initialize();
+  Registry.refresh();
+  
+  const sheetsTable = globals.sheetsObj;
+  const longNameCol = sheetsTable.getColOffset("LongName");
+  const deltaDateCol = sheetsTable.getColOffset("DeltaDate");
+  
+  if (longNameCol === -1 || deltaDateCol === -1) {
+    throw new Error("Registry Error: Required columns (LongName or DeltaDate) missing.");
+  }
+  
+  // Clean up input
+  let year;
+  if (yearVal === null || yearVal === undefined || String(yearVal).trim() === "" || String(yearVal).trim().toLowerCase() === "null") {
+    year = "FULL";
+  } else {
+    const parsed = Number(String(yearVal).trim());
+    if (isNaN(parsed) || parsed <= 0) {
+      throw new Error(`Invalid year entered: "${yearVal}". Please enter a valid 4-digit year (e.g. 2027) or leave blank.`);
+    }
+    year = parsed;
+  }
+  
+  let calculatedCount = 0;
+  sheetsTable.getWindow().forEach(row => {
+    const longName = row[longNameCol];
+    if (longName) {
+      const isWindowed = TypeUtils.isTrue(row[deltaDateCol]);
+      if (isWindowed) {
+        _calculateAndSaveWindow(longName, year);
+        calculatedCount++;
+      }
+    }
+  });
+  
+  // Force refresh Registry config so the rest of the application gets the new settings
+  Registry.refresh();
+  
+  return {
+    year: year === "FULL" ? "All Years" : String(year),
+    calculatedCount: calculatedCount
+  };
 }
 
 /**
@@ -427,7 +594,7 @@ function runRepairSingle(longName) {
   myLog("info", "Repair: Processing single sheet %s...", longName);
   
   // Specialized handling for Reconcile sheet
-  if (longName === "AnnualSummaries_NewReconcile") {
+  if (longName === "Reconciliation_NewReconcile") {
     const recon = _getReconciliationInstance();
     if (recon) {
       recon.startNewReconciliation();
@@ -435,11 +602,12 @@ function runRepairSingle(longName) {
     return;
   }
   
-  // Repair manager should force update mode EXCEPT for FileTable (Drive staging) sheets,
+  // Repair manager should force update mode EXCEPT for FileTable (Drive staging) and GenerateTable sheets,
   // which must always be replaced.
   const config = Registry.getSheetConfig(longName);
   const isFileTable = (config && config.SheetType === "FileTable") || longName.startsWith("ImportsArchive_File");
-  const forceUpdate = !isFileTable;
+  const isGenerateTable = (config && config.SheetType === "GenerateTable") || longName === "Ledgers_GeneratedTransactions";
+  const forceUpdate = !isFileTable && !isGenerateTable;
   
   _importNamedSheet(longName, forceUpdate, true); // Suppress Alerts
 }

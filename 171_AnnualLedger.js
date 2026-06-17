@@ -134,6 +134,18 @@ class AnnualLedger {
         const pRow = windowStart + i;
         let rowFY = String(row[this.sourceCols.fy] || "").trim();
         if (rowFY.length > 4) rowFY = rowFY.substring(0, 4);
+        const groupVal = row[this.sourceCols.group];
+        const groupKey = groupVal !== undefined && groupVal !== null && groupVal !== "" ? String(groupVal).trim() : null;
+        if (groupKey && Number(groupKey) !== 0) {
+          const groupsTable = getSheetInstance("Reconciliation_Groups");
+          if (groupsTable) {
+            const groupFY = groupsTable.lookupValue("Group", "FY", groupKey);
+            if (groupFY) {
+              rowFY = String(groupFY).trim();
+              if (rowFY.length > 4) rowFY = rowFY.substring(0, 4);
+            }
+          }
+        }
         if (!rowFY) continue;
 
         if (i === endIdx) {
@@ -142,11 +154,16 @@ class AnnualLedger {
 
         // 1. Hard Boundary: We scan the target year, the previous year, 
         // and one additional year as a safety buffer for out-of-period reconciliations.
+        // We only stop the scan if we hit a CLEARED ACCOUNT row from an older year.
         const safetyBoundary = Number(prevFY) - 1;
         if (Number(rowFY) < safetyBoundary) {
-          myLog("info", "AnnualLedger: Reached safety boundary (%s). Scan complete.", rowFY);
-          isFinished = true;
-          break;
+          const rowType = String(row[this.sourceCols.entryType] || "").trim().toUpperCase();
+          const isCleared = (row[this.sourceCols.cleared] === true || String(row[this.sourceCols.cleared]).trim().toUpperCase() === "TRUE");
+          if (rowType === "ACCOUNT" && isCleared) {
+            myLog("info", "AnnualLedger: Reached safety boundary (%s) at cleared account row %d. Scan complete.", rowFY, pRow);
+            isFinished = true;
+            break;
+          }
         }
 
         // 2. Process Row
@@ -188,6 +205,18 @@ class AnnualLedger {
     const isCleared = (row[this.sourceCols.cleared] === true || String(row[this.sourceCols.cleared]).trim().toUpperCase() === "TRUE");
     let rowFY = String(row[this.sourceCols.fy] || "").trim();
     if (rowFY.length > 4) rowFY = rowFY.substring(0, 4);
+    const groupVal = row[this.sourceCols.group];
+    const groupKey = groupVal !== undefined && groupVal !== null && groupVal !== "" ? String(groupVal).trim() : null;
+    if (groupKey && Number(groupKey) !== 0) {
+      const groupsTable = getSheetInstance("Reconciliation_Groups");
+      if (groupsTable) {
+        const groupFY = groupsTable.lookupValue("Group", "FY", groupKey);
+        if (groupFY) {
+          rowFY = String(groupFY).trim();
+          if (rowFY.length > 4) rowFY = rowFY.substring(0, 4);
+        }
+      }
+    }
 
     // Track uncleared activities before returning early
     if (type === "ACTIVITY" && !isCleared) {
@@ -227,8 +256,6 @@ class AnnualLedger {
     }
 
     // Track reconciled group details
-    const groupVal = row[this.sourceCols.group];
-    const groupKey = groupVal !== undefined && groupVal !== null && groupVal !== "" ? String(groupVal).trim() : null;
 
     if (groupKey && Number(groupKey) !== 0 && isCleared) {
       if (!state.groups) state.groups = new Map();
@@ -239,6 +266,7 @@ class AnnualLedger {
       g.rows.push({
         rowNum: rowNum,
         type: type,
+        account: accName,
         pk: row[this.sourceCols.pk],
         date: row[this.sourceCols.date],
         amount: amount,
@@ -272,7 +300,17 @@ class AnnualLedger {
       if (accountMeta && !accountMeta.pk) accountMeta.pk = row[this.sourceCols.pk];
 
       if (isLastBalance) {
-        yearlyAccountState.balCurrent = Number(row[this.sourceCols.balance] || 0);
+        const newBal = Number(row[this.sourceCols.balance] || 0);
+        const prevRow = yearlyAccountState._balCurrentRow || 0;
+        // The highest physical row number is always the authoritative closing balance —
+        // it is the most recent row the bank wrote a balance into.
+        if (rowNum > prevRow) {
+          yearlyAccountState.balCurrent = newBal;
+          yearlyAccountState._balCurrentRow = rowNum;
+          myLog("debug", `AnnualLedger: [Row ${rowNum}] Balance snapshot for "${accName}" in FY${rowFY}: £${newBal.toFixed(2)} (PK: ${row[this.sourceCols.pk]}).`);
+        } else {
+          myLog("debug", `AnnualLedger: [Row ${rowNum}] LastBalance SKIPPED for "${accName}" — row ${prevRow} (£${(yearlyAccountState.balCurrent||0).toFixed(2)}) is more recent (PK: ${row[this.sourceCols.pk]}).`);
+        }
       }
     } else if (type === "ACTIVITY") {
       yearlyAccountState.ledgerNet = (Number(yearlyAccountState.ledgerNet) || 0) + amount;
@@ -344,7 +382,7 @@ class AnnualLedger {
 
   _getYearlyAccountState(state, name) {
     if (!state.accounts.has(name)) {
-      state.accounts.set(name, { ledgerNet: 0, balCurrent: null });
+      state.accounts.set(name, { ledgerNet: 0, balCurrent: null, _balCurrentRow: 0 });
       if (!this._cachedFacts.globalAccountMeta.has(name)) {
         this._cachedFacts.globalAccountMeta.set(name, { name: name, pk: null, isValidAsset: false });
       }

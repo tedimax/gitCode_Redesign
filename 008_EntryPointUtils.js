@@ -11,7 +11,7 @@
 function _getReconciliationInstance() {
   try {
     // MIGRATION ALERT: Eventually switch this from "NewReconcile" to "Reconcile"
-    const longName = "AnnualSummaries_NewReconcile"; 
+    const longName = "Reconciliation_NewReconcile"; 
     const table = Utils.getSheetInstance(longName);
     if (!table) throw new Error(`Could not find table instance for ${longName}`);
     return table;
@@ -27,8 +27,11 @@ function _getReconciliationInstance() {
  * @param {string} longName
  * @param {boolean} forceUpdate - If true, uses the Fluent API to force update mode.
  */
-function _importNamedSheet(longName, forceUpdate = false, suppressAlerts = false) {
+function _importNamedSheet(longName, forceUpdate = false, suppressAlerts = false, triggerDownstream = true) {
   initialize();
+  if (CONFIG_CONSTANTS.GLOBAL_SHEET_NAMES.includes(longName)) {
+    longName = Registry.resolveGlobalSheetName(longName).LongName;
+  }
   Registry.refresh();
   myLog("info", "Importing sheet: %s (Force Update: %s)", longName, forceUpdate);
   
@@ -55,7 +58,9 @@ function _importNamedSheet(longName, forceUpdate = false, suppressAlerts = false
       }
 
       myLog("info", "Finished importing %s", longName);
-      _triggerDownstreamSheets(longName);
+      if (triggerDownstream) {
+        _triggerDownstreamSheets(longName);
+      }
     } else {
       myLog("warn", "Sheet %s does not support execution.", longName);
     }
@@ -141,23 +146,20 @@ function _calculateAndSaveWindow(longName, year) {
       lastRow = table.sheet.getLastRow();
     } else {
       const targetDate = new Date(year - 1, 3, 1); // 1st April (Start of the Financial Year)
-      const dateFieldName = config.DateField || "Date"; // Pull from Registry
+      const dateFieldName = table.getDateFieldName();
       let calculatedFirstRow = table.calculateFirstRowByDate(targetDate, dateFieldName);
       lastRow = table.sheet.getLastRow();
-      firstRow = calculatedFirstRow;
+      // Set the first row to the last row that is dated before the FY (the row immediately preceding the first row of the FY)
+      const labelRow = Number(config.LabelRow || config.labelrow || 1);
+      firstRow = Math.max(labelRow + 1, calculatedFirstRow - 1);
     }
 
     // 2. Resolve Registry Columns
     const sheetsTable = globals.sheetsObj;
     
-    // Broad search for FirstRow/LastRow columns
-    let firstRowCol = sheetsTable.getColOffset("FirstRow");
-    if (firstRowCol === -1) firstRowCol = sheetsTable.getColOffset("First Row");
-    if (firstRowCol === -1) firstRowCol = sheetsTable.getColOffset("firstrow");
-    
-    let lastRowCol = sheetsTable.getColOffset("LastRow");
-    if (lastRowCol === -1) lastRowCol = sheetsTable.getColOffset("Last Row");
-    if (lastRowCol === -1) lastRowCol = sheetsTable.getColOffset("lastrow");
+    const firstRowCol = sheetsTable.getColOffset("FirstRow");
+    const lastRowCol = sheetsTable.getColOffset("LastRow");
+    const fromFYCol = sheetsTable.getColOffset("FromFY");
 
     if (firstRowCol === -1 || lastRowCol === -1) {
       myLog("error", "Registry Column Map: %s", JSON.stringify(sheetsTable.getSymbolicOffsets()));
@@ -167,8 +169,9 @@ function _calculateAndSaveWindow(longName, year) {
     // Convert to 1-indexed column numbers
     const firstRowColIdx = firstRowCol + 1;
     const lastRowColIdx = lastRowCol + 1;
+    const fromFYColIdx = fromFYCol !== -1 ? fromFYCol + 1 : -1;
     
-    myLog("trace", "Resolved Registry Columns -> FirstRow: %d, LastRow: %d", firstRowColIdx, lastRowColIdx);
+    myLog("trace", "Resolved Registry Columns -> FirstRow: %d, LastRow: %d, FromFY: %d", firstRowColIdx, lastRowColIdx, fromFYColIdx);
 
     // Force a fresh fetch of the Registry to ensure row offsets are accurate
     sheetsTable.fetchWindow();
@@ -182,7 +185,13 @@ function _calculateAndSaveWindow(longName, year) {
     sheetsTable.sheet.getRange(physicalRegRow, firstRowColIdx).setValue(firstRow);
     sheetsTable.sheet.getRange(physicalRegRow, lastRowColIdx).setValue(lastRow);
     
-    myLog("info", "Updated Registry for %s: FirstRow=%d, LastRow=%d", longName, firstRow, lastRow);
+    if (fromFYColIdx !== -1) {
+      const fromFYValue = (year === "FULL") ? "" : new Date(Number(year) - 1, 3, 1); // 1st April of (year - 1)
+      sheetsTable.sheet.getRange(physicalRegRow, fromFYColIdx).setValue(fromFYValue);
+      myLog("info", "Updated Registry for %s: FirstRow=%d, LastRow=%d, FromFY=%s", longName, firstRow, lastRow, String(fromFYValue));
+    } else {
+      myLog("info", "Updated Registry for %s: FirstRow=%d, LastRow=%d", longName, firstRow, lastRow);
+    }
   } catch (e) {
     myLog("error", "Failed to set window for %s: %s", longName, e.message);
   }
@@ -193,6 +202,9 @@ function _calculateAndSaveWindow(longName, year) {
  */
 function _defineNamedRangeForSheet(longName) {
   initialize();
+  if (CONFIG_CONSTANTS.GLOBAL_SHEET_NAMES.includes(longName)) {
+    longName = Registry.resolveGlobalSheetName(longName).LongName;
+  }
   myLog("info", "Defining Named Ranges for: %s", longName);
   
   try {

@@ -119,7 +119,7 @@ class ReconcileRenderer {
 
     const formulas = {};
     const base = StringUtils.toRangeName(this.table.sheetName);
-    const mergedConfig = Registry.getSheetConfig("AnnualSummaries_Merged");
+    const mergedConfig = Registry.getSheetConfig(CONFIG_CONSTANTS.MERGED_TABLE_NAME);
     const mergedSheetName = mergedConfig ? (mergedConfig.SheetName || "Merged") : "Merged";
     const mergedBase = StringUtils.toRangeName(mergedSheetName);
 

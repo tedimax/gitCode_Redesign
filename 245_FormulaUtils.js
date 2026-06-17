@@ -89,7 +89,6 @@ var FormulaUtils = {
           
           // Circular Dependency / Target Pivot logic
           let replacement;
-          let isVirtual = false;
           let cleanCol = colName;
           if (cleanCol.startsWith("calc.")) {
             cleanCol = cleanCol.substring(5);
@@ -99,32 +98,61 @@ var FormulaUtils = {
             cleanCol = cleanCol.substring(6, cleanCol.length - 2);
           }
 
-          if (!longName && cleanCol === targetField && contextTable !== "__FILTER__") {
-            replacement = `(sourceRow[sourceLabels.indexOf("${cleanCol}")])`;
-          } else {
-            // Check if this is a virtual column in the current table
-            if (!longName && contextTable && typeof Registry !== 'undefined') {
+          let isVirtual = false;
+          if (!longName && cleanCol !== targetField && contextTable && typeof Registry !== 'undefined') {
+            let existsInSource = false;
+            if (defaultSource) {
+              try {
+                const sourceInstance = getSheetInstance(defaultSource);
+                if (sourceInstance) {
+                  const sourceLabels = sourceInstance.getLabels();
+                  const cleanColLower = cleanCol.toLowerCase();
+                  existsInSource = sourceLabels.some(l => String(l).toLowerCase().trim() === cleanColLower);
+                }
+              } catch (e) {
+                // Fallback
+              }
+            }
+
+            if (!existsInSource) {
               const targetFormulas = Registry.getFormulasFor(contextTable);
-              isVirtual = targetFormulas.some(f => {
+              const hasExplicitFormula = targetFormulas.some(f => {
                  const fName = (f.targetField || "").trim();
                  return fName === cleanCol || fName.endsWith("[" + cleanCol + "]");
               });
-            }
 
-            if (isVirtual) {
-              replacement = `calc['${cleanCol}']`;
-            } else {
-              let target = longName || defaultSource;
-              if (target.endsWith("_") && targetSuffix) target = target.slice(0, -1) + "_" + targetSuffix;
-              const t = target.trim().replace(/^["']|["']$/g, '');
-              const c = cleanCol.replace(/^["']|["']$/g, '');
-              replacement = `utils.getVal("${t}", "${c}", rowOff)`;
+              if (hasExplicitFormula) {
+                isVirtual = true;
+              } else {
+                try {
+                  const targetInstance = getSheetInstance(contextTable);
+                  if (targetInstance) {
+                    const labels = targetInstance.getLabels();
+                    const cleanColLower = cleanCol.toLowerCase();
+                    isVirtual = labels.some(l => String(l).toLowerCase().trim() === cleanColLower);
+                  }
+                } catch (e) {
+                  // Fallback
+                }
+              }
             }
+          }
+
+          if (!longName && cleanCol === targetField && contextTable !== "__FILTER__") {
+            replacement = `(sourceRow[sourceLabels.indexOf("${cleanCol}")])`;
+          } else if (isVirtual) {
+            replacement = `calc['${cleanCol}']`;
+          } else {
+            let target = longName || defaultSource;
+            if (target.endsWith("_") && targetSuffix) target = target.slice(0, -1) + "_" + targetSuffix;
+            const t = target.trim().replace(/^["']|["']$/g, '');
+            const c = cleanCol.replace(/^["']|["']$/g, '');
+            replacement = `utils.getVal("${t}", "${c}", rowOff)`;
           }
 
           // Temporal API Wrapping for Date, DateTime, and Time types
           let typeTable = longName || defaultSource;
-          if (!longName && (isVirtual || contextTable === "__FILTER__")) {
+          if (isVirtual) {
             typeTable = contextTable;
           }
           if (typeTable && typeTable.endsWith("_") && targetSuffix) {
@@ -257,22 +285,49 @@ var FormulaUtils = {
       sourceNames = [defaultSource];
     }
 
-    // Expand UnionTable source names if there is only 1 source and it's a UnionTable
+    // Expand Union config sheets (like NewAccounts_Union) to get constituent sheet names
     if (sourceNames.length === 1 && typeof getSheetInstance !== 'undefined') {
-      const sourceInstance = getSheetInstance(sourceNames[0]);
-      if (sourceInstance && sourceInstance.constructor.name === "UnionTable") {
-        if (typeof sourceInstance._ensureSources === 'function') {
-          sourceInstance._ensureSources();
-        }
-        if (sourceInstance._sourceInstances && sourceInstance._sourceInstances.length > 0) {
-          sourceNames = sourceInstance._sourceInstances.map(s => s.longName);
+      const name = sourceNames[0];
+      if (name.endsWith("_Union") || name === "NewAccounts_Union") {
+        try {
+          const unionSheet = getSheetInstance(name);
+          if (unionSheet) {
+            Sheet.prototype.fetch.call(unionSheet, unionSheet.firstDataRowIndex);
+            const configData = [...unionSheet._window];
+            unionSheet.clearCache();
+            
+            const sourceColOffset = unionSheet.getColOffset("Source");
+            if (sourceColOffset !== -1) {
+              const nestedNames = configData
+                .map(row => String(row[sourceColOffset] || "").trim())
+                .filter(n => n !== "");
+              if (nestedNames.length > 0) {
+                sourceNames = nestedNames;
+              }
+            }
+          }
+        } catch (e) {
+          // Fallback
         }
       }
     }
 
-    // 3. Build the exact [sourceName, colName] pairs
-    const overrideMap = new Map();
+    // Resolve index matching the defaultSource (the sheet we are currently compiling for)
+    const currentSourceIdx = sourceNames.findIndex(name => {
+      return name === defaultSource || 
+             name.replace(/^ImportsArchive_|^Ledgers_/, "") === defaultSource.replace(/^ImportsArchive_|^Ledgers_/, "") ||
+             name.split("_").pop() === defaultSource.split("_").pop();
+    });
+
+    if (currentSourceIdx === -1) {
+      // If defaultSource is not part of this union, compile this macro to an empty string
+      return "''";
+    }
+
+    // 3. Resolve the column name for the current source sheet
+    let colOverride = "";
     if (hasSheetNames) {
+      const overrideMap = new Map();
       parts.forEach(part => {
         const openBracket = part.indexOf("[");
         const closeBracket = part.lastIndexOf("]");
@@ -282,32 +337,48 @@ var FormulaUtils = {
           overrideMap.set(sheetName, colName);
         }
       });
+
+      const cleanName = defaultSource.replace(/^ImportsArchive_|^Ledgers_/, "");
+      const popName = defaultSource.split("_").pop();
+      
+      if (overrideMap.has(defaultSource)) {
+        colOverride = overrideMap.get(defaultSource);
+      } else if (overrideMap.has(cleanName)) {
+        colOverride = overrideMap.get(cleanName);
+      } else if (overrideMap.has(popName)) {
+        colOverride = overrideMap.get(popName);
+      } else {
+        colOverride = targetField;
+      }
+    } else {
+      colOverride = parts[currentSourceIdx] !== undefined ? parts[currentSourceIdx] : targetField;
     }
 
-    const resolvedSources = sourceNames.map((name, index) => {
-      let colOverride = "";
-      if (hasSheetNames) {
-        const cleanName = name.replace(/^ImportsArchive_|^Ledgers_/, "");
-        const popName = name.split("_").pop();
-        
-        if (overrideMap.has(name)) {
-          colOverride = overrideMap.get(name);
-        } else if (overrideMap.has(cleanName)) {
-          colOverride = overrideMap.get(cleanName);
-        } else if (overrideMap.has(popName)) {
-          colOverride = overrideMap.get(popName);
-        } else {
-          colOverride = targetField;
-        }
-      } else {
-        colOverride = parts[index] !== undefined ? parts[index] : targetField;
-      }
-      
-      colOverride = colOverride.trim().replace(/^\[|\]$/g, "");
-      return `["${name}", "${colOverride}"]`;
-    });
+    colOverride = colOverride.trim().replace(/^\[|\]$/g, "");
 
-    return `utils.verticalMerge(rowOff, ${resolvedSources.join(", ")})`;
+    // 4. Verify if the column exists in the current source sheet's label row
+    if (colOverride && typeof getSheetInstance !== 'undefined') {
+      try {
+        const instance = getSheetInstance(defaultSource);
+        if (instance && instance.getColOffset(colOverride) === -1) {
+          // Column is missing from this sheet. Treat it as empty.
+          return "''";
+        }
+      } catch (e) {
+        // Fallback
+      }
+    }
+
+    if (!colOverride || colOverride === "" || colOverride === "''" || colOverride === '""') {
+      return "''";
+    }
+
+    // 5. Compile to a direct lookup
+    if (colOverride === targetField) {
+      return `(sourceRow[sourceLabels.indexOf("${colOverride}")])`;
+    } else {
+      return `utils.getVal("${defaultSource}", "${colOverride}", rowOff)`;
+    }
   },
 
   /**
@@ -641,7 +712,11 @@ var FormulaUtils = {
                    longName.split("_").pop() === actualSourceName.split("_").pop();
           });
           if (match) {
-            return driver.getValueByLabel(rowOff, match[1]);
+            const colName = match[1];
+            if (colName === "" || colName === "''" || colName === '""') {
+              return "";
+            }
+            return driver.getValueByLabel(rowOff, colName);
           }
         }
 
@@ -708,7 +783,6 @@ var FormulaUtils = {
         
         if (target && typeof target._buildExecutionPlan === 'function') {
           myLog("info", "isLast: Building cache using target execution plan for %s", target.longName);
-          target._initializeMappingEngine();
           const plan = target._buildExecutionPlan(driver);
           
           const sourceLabels = driver.getLabels();
@@ -758,7 +832,14 @@ var FormulaUtils = {
             
             if (diff !== 0) return diff;
             
-            // Tie-breaker: stable sort matching alphabetical sort by PK (to mirror Google Sheets' range.sort() behavior)
+            // Tie-breaker: stable sort. Prefer Sequence column if present, otherwise fallback to alphabetical sort by PK
+            const hasSeq = (target && typeof target.getColOffset === 'function' && target.getColOffset("Sequence") !== -1) ||
+                           (driver && typeof driver.getColOffset === 'function' && driver.getColOffset("Sequence") !== -1);
+            if (hasSeq) {
+              const seqA = Number(_rowObjectsCache[a].Sequence !== undefined ? _rowObjectsCache[a].Sequence : (_rowObjectsCache[a].sequence || 0));
+              const seqB = Number(_rowObjectsCache[b].Sequence !== undefined ? _rowObjectsCache[b].Sequence : (_rowObjectsCache[b].sequence || 0));
+              return seqA - seqB;
+            }
             const pkA = String(_rowObjectsCache[a].PK || _rowObjectsCache[a].pk || "");
             const pkB = String(_rowObjectsCache[b].PK || _rowObjectsCache[b].pk || "");
             return pkA.localeCompare(pkB);

@@ -26,6 +26,11 @@ const Utils = (() => {
    */
   const getSheetInstance = (longName, ssidOverride = null) => {
     if (!longName) return null;
+    if (typeof CONFIG_CONSTANTS !== 'undefined' && CONFIG_CONSTANTS.GLOBAL_SHEET_NAMES && CONFIG_CONSTANTS.GLOBAL_SHEET_NAMES.includes(longName)) {
+      if (typeof Registry !== 'undefined' && typeof Registry.resolveGlobalSheetName === 'function') {
+        longName = Registry.resolveGlobalSheetName(longName).LongName;
+      }
+    }
     if (globals.sheetInstances[longName]) return globals.sheetInstances[longName];
 
     // Read hydrated config from Registry (needed to determine Type/SSID)
@@ -50,34 +55,67 @@ const Utils = (() => {
   };
 
   /**
-   * Determines the primary source table (the loop driver) for an ImportTable instance.
-   * 1. Checks 'SourceSheet' in properties.
+   * Resolves all source sheet instances configured for an ImportTable.
+   * If a source sheet is a Union configuration sheet (e.g. NewAccounts_Union),
+   * it dynamically parses its physical "Source" column to resolve the constituent sheets in order.
    */
-  const getSourceSheet = (tableInstance) => {
-    if (tableInstance._resolvedSourceSheet && !tableInstance._sourceOverride) {
-      return tableInstance._resolvedSourceSheet;
-    }
-
+  const getSourceSheets = (tableInstance) => {
     // 0. Explicit override via Fluent API
     const override = tableInstance._sourceOverride;
     if (override) {
       const instance = getSheetInstance(override);
-      if (instance) return instance;
+      return instance ? [instance] : [];
     }
 
-    // 1. Explicitly defined in Registry
+    // 1. Comma-separated list from properties (SourceSheets or SourceSheet)
     const explicitSource = tableInstance.getProperty("SourceSheets") || tableInstance.getProperty("SourceSheet");
     if (explicitSource) {
-      const instance = getSheetInstance(explicitSource);
-      if (instance) {
-        tableInstance._resolvedSourceSheet = instance;
-        return instance;
+      const sourceNames = String(explicitSource).split(",").map(s => s.trim());
+      
+      // If there is only one source name, and it is a union configuration sheet
+      if (sourceNames.length === 1 && (sourceNames[0].endsWith("_Union") || sourceNames[0] === "NewAccounts_Union")) {
+        try {
+          const unionSheet = getSheetInstance(sourceNames[0]);
+          if (unionSheet) {
+            // Read the 'Source' column from the physical sheet
+            Sheet.prototype.fetch.call(unionSheet, unionSheet.firstDataRowIndex);
+            const configData = [...unionSheet._window];
+            unionSheet.clearCache();
+            
+            const sourceColOffset = unionSheet.getColOffset("Source");
+            if (sourceColOffset !== -1) {
+              const nestedSources = configData
+                .map(row => String(row[sourceColOffset] || "").trim())
+                .filter(name => name !== "")
+                .map(name => getSheetInstance(name))
+                .filter(Boolean);
+              
+              if (nestedSources.length > 0) {
+                myLog("info", "Resolved %d nested sources from Union sheet %s: %s", 
+                  nestedSources.length, sourceNames[0], nestedSources.map(s => s.longName).join(", "));
+                return nestedSources;
+              }
+            }
+          }
+        } catch (e) {
+          myLog("warn", "Failed to resolve nested sources from Union config sheet %s: %s", sourceNames[0], e.message);
+        }
       }
+      
+      return sourceNames.map(name => getSheetInstance(name)).filter(Boolean);
     }
 
-    // 2. Error if no source sheet is defined
     throw new Error(`Registry Ingestion Error: No 'SourceSheets' driver was defined for the transformation table "${tableInstance.longName}".\n\n` +
       `👉 Action Required: Open your 'NewAccounts_Sheets' configuration table and make sure the 'SourceSheets' column is populated with the correct driver sheet name(s) for "${tableInstance.longName}".`);
+  };
+
+  /**
+   * Determines the primary source table (the loop driver) for an ImportTable instance.
+   * Maintains backwards compatibility by returning the first source.
+   */
+  const getSourceSheet = (tableInstance) => {
+    const sheets = getSourceSheets(tableInstance);
+    return sheets.length > 0 ? sheets[0] : null;
   };
 
   /**
@@ -167,6 +205,7 @@ const Utils = (() => {
   return {
     getSpreadsheetInstance,
     getSheetInstance,
+    getSourceSheets,
     getSourceSheet,
     cleanNameForRange,
     displayStartToast,

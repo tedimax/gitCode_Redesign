@@ -37,6 +37,13 @@ const TypeUtils = {
       const cleanType = (type || "String").trim();
       const isEmpty = (val === null || val === undefined || val === "");
       
+      // Guard: Google Sheets formula errors (#N/A, #REF!, #VALUE!, #DIV/0!, etc.)
+      // arrive as strings or as SpreadsheetApp error objects. Treat them as empty.
+      if (!isEmpty) {
+        const strCheck = String(val);
+        if (strCheck.charAt(0) === "#") return "";
+      }
+
       if (isEmpty && ["String", "Key1", "Key2", "rangeNames"].includes(cleanType)) return "";
       
       switch (cleanType) {

@@ -179,12 +179,85 @@
         0%, 100% { opacity: 1; }
         50% { opacity: 0.6; }
       }
+      .window-section {
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 12px 16px;
+        margin-bottom: 16px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+      }
+      .window-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 13px;
+        color: #475569;
+        margin-bottom: 8px;
+      }
+      .window-row strong {
+        color: #0f172a;
+        font-weight: 600;
+        background: #f1f5f9;
+        padding: 2px 8px;
+        border-radius: 6px;
+        border: 1px solid #e2e8f0;
+        font-size: 12px;
+      }
+      .window-input-row {
+        display: flex;
+        gap: 8px;
+      }
+      .window-input-row input {
+        flex-grow: 1;
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid #cbd5e1;
+        font-size: 13px;
+        font-family: inherit;
+        outline: none;
+        transition: border-color 0.2s;
+      }
+      .window-input-row input:focus {
+        border-color: #2563eb;
+      }
+      .btn-update-window {
+        padding: 8px 16px;
+        background: #0f172a;
+        color: white;
+        border: 1px solid #0f172a;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      .btn-update-window:hover {
+        background: #1e293b;
+        border-color: #1e293b;
+      }
+      .btn-update-window:disabled {
+        background: #94a3b8;
+        border-color: #94a3b8;
+        cursor: not-allowed;
+      }
     </style>
   </head>
   <body>
     <h2>🛠️ Repair Manager</h2>
     <p class="description">Select sheets to repair. Ticking a sheet automatically selects its downstream targets. You can deselect targets manually, and they will remain clean unless newly triggered.</p>
     
+    <div class="window-section">
+      <div class="window-row">
+        <span>Active FY Window:</span>
+        <strong id="activeWindowText"><?= currentFYWindow === 'FULL' ? 'All Years (FULL)' : 'FY' + currentFYWindow ?></strong>
+      </div>
+      <div class="window-input-row">
+        <input type="text" id="fyInput" placeholder="e.g. 2027 (or type 'null' for all years)">
+        <button class="btn-update-window" id="updateWindowBtn" onclick="changeFYWindow()">Set Window</button>
+      </div>
+    </div>
+
     <div class="sheet-list" id="sheetList">
       <div style="padding: 20px; text-align: center; color: #64748b;">Loading sheets...</div>
     </div>
@@ -405,6 +478,58 @@
           status.style.color = '#dc2626';
           status.style.background = '#fef2f2';
           status.style.borderColor = '#fecaca';
+        }
+      }
+
+      async function changeFYWindow() {
+        const fyInput = document.getElementById('fyInput');
+        const updateWindowBtn = document.getElementById('updateWindowBtn');
+        const activeWindowText = document.getElementById('activeWindowText');
+        const status = document.getElementById('status');
+
+        const val = fyInput.value.trim();
+        
+        // Disable inputs
+        fyInput.disabled = true;
+        updateWindowBtn.disabled = true;
+        status.style.display = 'block';
+        status.innerText = 'Updating financial year window...';
+
+        try {
+          const result = await new Promise((resolve, reject) => {
+            google.script.run
+              .withSuccessHandler(resolve)
+              .withFailureHandler(reject)
+              .updateFYWindow(val);
+          });
+
+          // Update label
+          if (result.year === "All Years") {
+            activeWindowText.innerText = 'All Years (FULL)';
+          } else {
+            activeWindowText.innerText = 'FY' + result.year;
+          }
+          
+          fyInput.value = '';
+          status.innerText = `Success: Updated window for ${result.calculatedCount} sheets.`;
+          status.style.color = '#166534';
+          status.style.background = '#dcfce7';
+          status.style.borderColor = '#bbf7d0';
+          
+          setTimeout(() => {
+            status.style.display = 'none';
+            // Restore styles
+            status.style.color = '#2563eb';
+            status.style.background = '#eff6ff';
+            status.style.borderColor = '#bfdbfe';
+          }, 3000);
+
+        } catch (err) {
+          alert('Failed to update window: ' + err.message);
+          status.style.display = 'none';
+        } finally {
+          fyInput.disabled = false;
+          updateWindowBtn.disabled = false;
         }
       }
 

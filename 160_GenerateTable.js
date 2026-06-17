@@ -14,15 +14,18 @@ class GenerateTable extends ImportTable {
    * Overrides ImportTable._initializeMappingEngine to inject special DateEvent & PK rules
    * only if they are not already defined in the formulas sheet.
    */
-  _initializeMappingEngine() {
+  _initializeMappingEngine(sourceSheet) {
     if (this._compiledFormulaMap.size > 0) return;
 
+    if (!sourceSheet) {
+      sourceSheet = Utils.getSourceSheet(this);
+    }
+
     // 1. Run standard registry formula compilation
-    super._initializeMappingEngine();
+    super._initializeMappingEngine(sourceSheet);
 
     // 2. Inject explicit fallbacks ONLY if they are not defined in the sheet
     const labels = this.getLabels();
-    const sourceSheet = Utils.getSourceSheet(this);
     const sourceLongName = sourceSheet.longName;
 
     if (labels.includes("DateEvent") && !this._compiledFormulaMap.has("DateEvent")) {
@@ -194,6 +197,51 @@ class GenerateTable extends ImportTable {
       this.longName, newData.length, sourceSheet.windowDataLength);
     
     return newData;
+  }
+
+  /**
+   * Resolves the target sheet's date boundary to prevent processing older duplicate records.
+   * Looks at the preceding row first, then falls back to the first row of the cached window.
+   *
+   * @param {string} dateFieldName - The column label representing the date field.
+   * @returns {Date|null} The resolved boundary Date object, or null if not found.
+   * @private
+   */
+  _getTargetBoundaryDate(dateFieldName) {
+    const dateColOffset = this.getColOffset(dateFieldName);
+    if (dateColOffset === -1) return null;
+
+    const prevRowIndex = this.firstDataRowIndex - 1;
+    const labelRowIdx = Number(this.getProperty("LabelRow")) || 1;
+    
+    // 1. Primary Strategy: Try to read the date from the row immediately above our target write window
+    if (this.sheet && prevRowIndex > labelRowIdx) {
+      const resolvedDateRaw = this.sheet.getRange(prevRowIndex, dateColOffset + 1).getValue();
+      if (resolvedDateRaw) {
+        const parsed = resolvedDateRaw instanceof Date ? resolvedDateRaw : new Date(resolvedDateRaw);
+        if (!isNaN(parsed.getTime())) {
+          myLog("info", "Target Window Date Boundary for %s: %s (preceding row %d date)", 
+            this.longName, parsed.toISOString().split('T')[0], prevRowIndex);
+          return parsed;
+        }
+      }
+    }
+    
+    // 2. Secondary Strategy (Fallback): If there is no preceding row, look at the first cached window row
+    const targetRows = this.getWindow();
+    if (targetRows.length > 0) {
+      const firstRowDateRaw = targetRows[0][dateColOffset];
+      if (firstRowDateRaw) {
+        const parsed = firstRowDateRaw instanceof Date ? firstRowDateRaw : new Date(firstRowDateRaw);
+        if (!isNaN(parsed.getTime())) {
+          myLog("info", "Target Window Date Boundary for %s: %s (first row date fallback)", 
+            this.longName, parsed.toISOString().split('T')[0]);
+          return parsed;
+        }
+      }
+    }
+    
+    return null;
   }
 }
 

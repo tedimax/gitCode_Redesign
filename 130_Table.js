@@ -40,9 +40,6 @@ class Table extends Sheet {
     this._validStartRow = null; // Physical row index of the first validated row
     this._validEndRow = null;   // Physical row index of the last validated row
     this._skipValidation = false; // Internal flag for fast lookups
-    
-    // Initialize headers automatically upon creation
-    this.initializeHeaderMap();
   }
 
   /**
@@ -125,10 +122,17 @@ class Table extends Sheet {
     return null;
   }
 
+  _ensureHeaderMap() {
+    if (!this._labels) {
+      this.initializeHeaderMap();
+    }
+  }
+
   /**
-   * Returns an array of field labels in their physical column order.
+   * Lazy accessor for the list of column labels.
    */
   getLabels() {
+    this._ensureHeaderMap();
     return this._labels || [];
   }
 
@@ -144,6 +148,7 @@ class Table extends Sheet {
    * O(1) Column Index Resolver
    */
   getColOffset(name) {
+    this._ensureHeaderMap();
     if (!name) return -1;
     const searchName = String(name).toLowerCase().trim();
     
@@ -223,6 +228,7 @@ class Table extends Sheet {
    * Functional Pattern: .reduce() over columnMap.
    */
   getRowObjectByOffset(rowOffset) {
+    this._ensureHeaderMap();
     try {
       if (rowOffset < 0 || rowOffset >= this.windowDataLength) {
         throw new Error(`Invalid row offset ${rowOffset} for object conversion. Window length: ${this.windowDataLength}`);
@@ -245,11 +251,6 @@ class Table extends Sheet {
    * Overrides Sheet.fetch to apply Incremental Strict Typing and Perimeter Validation.
    */
   fetch(startRow = null, numRows = null) {
-    if (this.constructor.name === "UnionTable") {
-      myLog("trace", "UnionTable %s: fetch called (startRow=%s, numRows=%s). Bypassing to virtual window loading.", this.longName, startRow, numRows);
-      this.getWindow();
-      return;
-    }
     try {
       super.fetch(startRow, numRows);
       if (this.windowDataLength === 0) return;
@@ -299,8 +300,8 @@ class Table extends Sheet {
           
           // Only enforce transaction-level mandatory field validation for actual financial ledger or merged/group sheets
           const isTransactionTable = this.longName.startsWith("Ledgers_") || 
-                                     this.longName === "AnnualSummaries_Merged" || 
-                                     this.longName === "AnnualSummaries_UnChecked";
+                                     this.longName === CONFIG_CONSTANTS.MERGED_TABLE_NAME || 
+                                     this.longName === "Reconciliation_UnChecked";
 
           let isMandatory = isTransactionTable && (CONFIG_CONSTANTS.MANDATORY_TABLE_FIELDS || []).includes(label);
           const entryType = entryTypeOff !== -1 ? String(row[entryTypeOff] || "").trim().toUpperCase() : "ACTIVITY";
@@ -500,6 +501,79 @@ class Table extends Sheet {
   }
 
   /**
+   * Scans the physical table rows in memory, identifies duplicate rows by their calculated Primary Key,
+   * and clears/rewrites the table in-place leaving only the first occurrence of each unique key.
+   *
+   * @returns {Object} Statistics about the operation: { beforeCount, afterCount, duplicatesRemoved }
+   */
+  deduplicate() {
+    this.withoutValidation();
+    
+    const labelRowRaw = this.getProperty("LabelRow");
+    const labelRow = (labelRowRaw === null || labelRowRaw === undefined || labelRowRaw === "") ? 1 : Number(labelRowRaw);
+    const startRow = labelRow + 1;
+
+    // 1. Force load the entire physical sheet from the label row + 1
+    this.clearCache();
+    this.fetch(startRow);
+    const window = this.getWindow();
+    
+    if (window.length === 0) {
+      myLog("info", "Deduplicate %s: Sheet is already empty.", this.longName);
+      return { beforeCount: 0, afterCount: 0, duplicatesRemoved: 0 };
+    }
+
+    const beforeCount = window.length;
+    const seenKeys = new Set();
+    const deduplicatedRows = [];
+    const duplicatePKs = [];
+
+    // 2. Identify and filter out duplicate rows
+    for (let rOff = 0; rOff < window.length; rOff++) {
+      const row = window[rOff];
+      const keyRaw = this.getRowKey(row);
+      if (!keyRaw) {
+        // If a row has no PK, preserve it blindly
+        deduplicatedRows.push(row);
+        continue;
+      }
+
+      const key = String(keyRaw).trim().toLowerCase();
+      if (seenKeys.has(key)) {
+        myLog("info", "Deduplicate %s: Identified duplicate PK '%s' at row offset %d", this.longName, keyRaw, rOff);
+        duplicatePKs.push(String(keyRaw).trim());
+        continue;
+      }
+
+      seenKeys.add(key);
+      deduplicatedRows.push(row);
+    }
+
+    const afterCount = deduplicatedRows.length;
+    const duplicatesRemoved = beforeCount - afterCount;
+
+    if (duplicatesRemoved > 0) {
+      // 3. Clear data area and write deduplicated rows back to the sheet
+      myLog("info", "Deduplicate %s: Removing %d duplicates...", this.longName, duplicatesRemoved);
+      
+      const lastRow = this.getLastRowIndex();
+      if (lastRow >= startRow) {
+        this.sheet.getRange(startRow, 1, lastRow - startRow + 1, this.getLastColumnIndex()).clearContent();
+      }
+      this._cachedLastRowIndex = startRow - 1;
+      this._maxWrittenRow = 0;
+      
+      this.writeChunks(startRow, deduplicatedRows);
+      this.clearCache();
+      myLog("info", "Deduplicate %s COMPLETE. Kept %d / %d rows.", this.longName, afterCount, beforeCount);
+    } else {
+      myLog("info", "Deduplicate %s: No duplicates found. Kept all %d rows.", this.longName, beforeCount);
+    }
+
+    return { beforeCount, afterCount, duplicatesRemoved, duplicatePKs };
+  }
+
+  /**
    * Lazy accessor for the Hash Key Map.
    * Ensures the map is built exactly once on demand.
    */
@@ -533,32 +607,63 @@ class Table extends Sheet {
     
     // 2. Cache Miss: We have never performed a lookup for this column pair yet
     if (!this._lookupCacheMap.has(cacheKey)) {
-      // Force the RAM window to load if it hasn't already
-      this.fetch(this.firstDataRowIndex);
-      
       const keyOffset = this.getColOffset(keyCol);
       const valOffset = this.getColOffset(valCol);
       
       // Fail safely if the columns don't physically exist in the sheet
       if (keyOffset === -1 || valOffset === -1) return "";
- 
-      // Iterate over the entire RAM window exactly once to build a dedicated Map for this column pair
-      // using flatMap to elegantly filter out blanks without tripping type inferencers.
-      const lookupMap = new Map(
-        this._window.flatMap(row => {
-          const k = row[keyOffset];
-          // Ignore empty cells, and standardize the key to lowercase string for reliable matching
-          return (k !== undefined && k !== "") ? [[String(k).toLowerCase(), row[valOffset]]] : [];
-        })
-      );
-      
-      // Store this dedicated column-pair Map in the master cache
+
+      const lookupMap = new Map();
       this._lookupCacheMap.set(cacheKey, lookupMap);
-      myLog("trace", "Built lookup cache for %s (%s->%s)", this.longName, keyCol, valCol);
+      
+      if (this.longName === "Reconciliation_Groups") {
+        this._lookupLastRowFetched = this.getLastRowIndex();
+        myLog("info", "Registry: Initialized backward chunk lookup cache for %s (%s->%s), bottom row is %d", 
+          this.longName, keyCol, valCol, this._lookupLastRowFetched);
+      } else {
+        // Force the RAM window to load in full for other smaller config tables
+        this.fetch(this.firstDataRowIndex);
+        
+        this._window.forEach(row => {
+          const k = row[keyOffset];
+          if (k !== undefined && k !== "") {
+            lookupMap.set(String(k).toLowerCase(), row[valOffset]);
+          }
+        });
+        myLog("trace", "Built lookup cache for %s (%s->%s)", this.longName, keyCol, valCol);
+      }
     }
     
-    // 3. Cache Hit: Instantly retrieve the value in O(1) time using the standardized search value
-    return this._lookupCacheMap.get(cacheKey).get(String(searchVal).toLowerCase()) || "";
+    const lookupMap = this._lookupCacheMap.get(cacheKey);
+    const searchKeyLower = String(searchVal).toLowerCase();
+
+    // 3. Backward Chunk Scan Fallback: If searching Reconciliation_Groups and not yet in cache, fetch next chunk of 500 rows
+    if (this.longName === "Reconciliation_Groups" && !lookupMap.has(searchKeyLower) && this._lookupLastRowFetched && this._lookupLastRowFetched >= this.firstDataRowIndex) {
+      const keyOffset = this.getColOffset(keyCol);
+      const valOffset = this.getColOffset(valCol);
+      const chunkSize = 500;
+      
+      while (!lookupMap.has(searchKeyLower) && this._lookupLastRowFetched >= this.firstDataRowIndex) {
+        const startRow = Math.max(this.firstDataRowIndex, this._lookupLastRowFetched - chunkSize + 1);
+        const numRows = this._lookupLastRowFetched - startRow + 1;
+        
+        myLog("info", "Groups Lookup: Scanning backward chunk from row %d to %d for Group '%s'...", startRow, this._lookupLastRowFetched, searchVal);
+        
+        this.fetch(startRow, numRows);
+        
+        this._window.forEach(row => {
+          const k = row[keyOffset];
+          if (k !== undefined && k !== "") {
+            lookupMap.set(String(k).toLowerCase(), row[valOffset]);
+          }
+        });
+        
+        this._lookupLastRowFetched = startRow - 1;
+      }
+    }
+    
+    // 4. Cache Hit: Instantly retrieve the value in O(1) time
+    return lookupMap.get(searchKeyLower) || "";
   }
   
   /**
@@ -644,11 +749,25 @@ class Table extends Sheet {
   }
 
   /**
+   * Resolves the primary date column label for this sheet.
+   * Defaults to 'Date' if not configured, but falls back to 'DateEvent' 
+   * if 'Date' doesn't exist and 'DateEvent' does.
+   * @returns {string}
+   */
+  getDateFieldName() {
+    let dateFieldName = this.getProperty("DateField") || "Date";
+    if (this.getColOffset(dateFieldName) === -1 && dateFieldName === "Date" && this.getColOffset("DateEvent") !== -1) {
+      return "DateEvent";
+    }
+    return dateFieldName;
+  }
+
+  /**
    * Generates and writes keys for rows that have dates but no keys.
    */
   makeKeys() {
     const keyFieldName = this.getProperty("Key") || "PK";
-    const dateFieldName = this.getProperty("DateField") || "Date";
+    const dateFieldName = this.getDateFieldName();
     const keyPrefix = this.getProperty("KeyPrefix") || "";
     
     const keyOffset = this.getColOffset(keyFieldName);

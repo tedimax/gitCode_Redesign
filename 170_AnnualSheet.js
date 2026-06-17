@@ -112,6 +112,9 @@ class AnnualSheet extends UpdateTable {
    */
   afterSync(stats, newData) {
     this._applyStyles(newData);
+    if (typeof AuditUtils !== 'undefined') {
+      AuditUtils.flush();
+    }
   }
 
   // =========================================================================

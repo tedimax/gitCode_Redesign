@@ -1,12 +1,10 @@
-"use strict";
+const MERGED_TABLE_NAME = "Merged";
+const GLOBAL_SHEET_NAMES = ["Merged"];
 
-/**
- * gitCode_Redesign - Centralized Constants
- * All system-wide fixed values go here.
- */
 const CONFIG_CONSTANTS = {
-  VERSION: "v1.1.24-symbolic-20260601-1317",
+  VERSION: "v1.1.27-symbolic-20260614-1640",
   LOG_LEVEL: "info",
+  GLOBAL_SHEET_NAMES: GLOBAL_SHEET_NAMES,
   ANCHOR_SSID: "13Uv4dP6fSnEyrU1GXvKvgKziLakeuWTjXOZiyNpFlPU", // NewAccounts SSID
   SHEETS_CONFIG_NAME: "NewAccounts_Sheets",
   DATATYPES_SHEET_NAME: "NewAccounts_DataTypes",
@@ -34,11 +32,12 @@ const CONFIG_CONSTANTS = {
   DEFAULT_TIMEZONE: "Europe/London",
   DECIMAL_PRECISION: 2,
   FUZZY_NUMERIC_THRESHOLD: 1e-6,
-  FUZZY_BALANCE_THRESHOLD: 0.005,
+  FUZZY_BALANCE_THRESHOLD: 0.03,
   HASH_PREFIX: "#",
   RANGE_NAME_REGEX: /[^a-zA-Z0-9_]/g,
   USE_NATIVE_DATES_FOR_SHEET: true, // Toggle between true (Native Date) and false (ISO String)
-  DEFAULT_ANNUAL_SUMMARY_SOURCE_TABLE: "AnnualSummaries_Merged",
+  DEFAULT_ANNUAL_SUMMARY_SOURCE_TABLE: MERGED_TABLE_NAME,
+  MERGED_TABLE_NAME: MERGED_TABLE_NAME,
   RECONCILE_IDENTIFIER_FIELDS: ["pk", "fk", "depositId", "paymentId"],
   DEFAULT_ANNUAL_SUMMARY_NAMES_TABLE: "AnnualSummaries_Names",
   DEFAULT_ASSET_LEDGERS: ["Ledgers_Bank", "Ledgers_Cash", "Ledgers_Assets"],
@@ -77,9 +76,9 @@ const CONFIG_CONSTANTS = {
     { label: "✍️ Manual Cashbox", longName: "ManualEntry_Cashbox" },
     
     // Summary Sheets
-    { label: "🔗 Merged", longName: "AnnualSummaries_Merged" },
-    { label: "🔍 Unchecked", longName: "AnnualSummaries_UnChecked" },
-    { label: "🔄 Reconcile", longName: "AnnualSummaries_NewReconcile" }
+    { label: "🔗 Merged", longName: MERGED_TABLE_NAME },
+    { label: "🔍 Unchecked", longName: "Reconciliation_UnChecked" },
+    { label: "🔄 Reconcile", longName: "Reconciliation_NewReconcile" }
   ],
 
   // Dependency Map: When Key is imported, mark all values as Pending (Process = TRUE)
@@ -92,33 +91,33 @@ const CONFIG_CONSTANTS = {
     "ImportsArchive_FileSQTX": ["ImportsArchive_RawSQTX"],
 
     // Archive -> Ledger Links
-    "ImportsArchive_RawBank": ["Ledgers_Bank", "AnnualSummaries_Merged"],
-
-    "ImportsArchive_RawCash": ["Ledgers_Cash", "AnnualSummaries_Merged"],
-    "ImportsArchive_RawSQTX": ["Ledgers_SquareTransactions", "Ledgers_SquareFees", "Ledgers_SquareDeposits", "AnnualSummaries_Merged"],
-    "ImportsArchive_RawSQTF": ["Ledgers_SquareFees", "AnnualSummaries_Merged"],
-    "ImportsArchive_RawSMPay": ["Ledgers_BookingPayments", "AnnualSummaries_Merged"],
-    "ImportsArchive_RawSMApp": ["Ledgers_Bookings", "AnnualSummaries_Merged"],
-    "Ledgers_Transactions": ["AnnualSummaries_Merged"],
-    "Ledgers_GeneratedTransactions": ["AnnualSummaries_Merged"],
-    "Ledgers_Bookings": ["Ledgers_BookingPayments", "AnnualSummaries_Merged"],
-    "Ledgers_Assets": ["AnnualSummaries_Merged"],
-    "Ledgers_Bank": ["AnnualSummaries_Merged"],
-    "Ledgers_Cash": ["AnnualSummaries_Merged"],
-    "Ledgers_SquareTransactions": ["AnnualSummaries_Merged"],
-    "Ledgers_SquareDeposits": ["AnnualSummaries_Merged"],
-    "Ledgers_SquareFees": ["AnnualSummaries_Merged"],
-    "Ledgers_SquarePayments": ["AnnualSummaries_Merged"],
-    "Ledgers_BookingPayments": ["AnnualSummaries_Merged"],
+    "ImportsArchive_RawBank": ["Ledgers_Bank", MERGED_TABLE_NAME],
+ 
+    "ImportsArchive_RawCash": ["Ledgers_Cash", MERGED_TABLE_NAME],
+    "ImportsArchive_RawSQTX": ["Ledgers_SquareTransactions", "Ledgers_SquareFees", "Ledgers_SquareDeposits", MERGED_TABLE_NAME],
+    "ImportsArchive_RawSQTF": ["Ledgers_SquareFees", MERGED_TABLE_NAME],
+    "ImportsArchive_RawSMPay": ["Ledgers_BookingPayments", MERGED_TABLE_NAME],
+    "ImportsArchive_RawSMApp": ["Ledgers_Bookings", MERGED_TABLE_NAME],
+    "Ledgers_Transactions": [MERGED_TABLE_NAME],
+    "Ledgers_GeneratedTransactions": [MERGED_TABLE_NAME],
+    "Ledgers_Bookings": ["Ledgers_BookingPayments", MERGED_TABLE_NAME],
+    "Ledgers_Assets": [MERGED_TABLE_NAME],
+    "Ledgers_Bank": [MERGED_TABLE_NAME],
+    "Ledgers_Cash": [MERGED_TABLE_NAME],
+    "Ledgers_SquareTransactions": [MERGED_TABLE_NAME],
+    "Ledgers_SquareDeposits": [MERGED_TABLE_NAME],
+    "Ledgers_SquareFees": [MERGED_TABLE_NAME],
+    "Ledgers_SquarePayments": [MERGED_TABLE_NAME],
+    "Ledgers_BookingPayments": [MERGED_TABLE_NAME],
     
     // Merged -> Unchecked Link
-    "AnnualSummaries_Merged": ["AnnualSummaries_UnChecked"],
-    "AnnualSummaries_UnChecked": ["AnnualSummaries_NewReconcile"],
+    [MERGED_TABLE_NAME]: ["Reconciliation_UnChecked"],
+    "Reconciliation_UnChecked": ["Reconciliation_NewReconcile"],
     
     // Manual Entry Dependencies
-    "ManualEntry_Ledger": ["AnnualSummaries_Merged"],
-    "ManualEntry_Holdings": ["AnnualSummaries_Merged"],
-    "ManualEntry_Cashbox": ["AnnualSummaries_Merged"]
+    "ManualEntry_Ledger": [MERGED_TABLE_NAME],
+    "ManualEntry_Holdings": [MERGED_TABLE_NAME],
+    "ManualEntry_Cashbox": [MERGED_TABLE_NAME]
   },
 
   // Fields that must not be empty in data tables (Literal Column Headers)
@@ -152,7 +151,7 @@ const CONFIG_CONSTANTS = {
  * Indexed by the Long Name of the table.
  */
 const TABLE_COLUMN_MAP = {
-  "AnnualSummaries_Merged": {
+  [MERGED_TABLE_NAME]: {
     amount: "Amount",
     account: "Account",
     cleared: "Cleared",
@@ -172,20 +171,20 @@ const TABLE_COLUMN_MAP = {
     name: "Name",
     type: "Type"
   },
-  "AnnualSummaries_NewReconcile": {
+  "Reconciliation_NewReconcile": {
     pk: "PK",
     transaction: "Transaction",
     balanced: "Balanced",
     transactionFY: "TransactionFY",
     date: "Date"
   },
-  "AnnualSummaries_NewGroups": {
+  "Reconciliation_NewGroups": {
     pk: "PK",
     group: "Group",
     cleared: "Cleared",
     fy: "FY"
   },
-  "AnnualSummaries_Groups": {
+  "Reconciliation_Groups": {
     pk: "PK",
     group: "Group",
     cleared: "Cleared",
@@ -336,7 +335,7 @@ const REPORT_LAYOUT = {
     
     // Import Trigger
     scope[`importSheet${safeName}`] = function() {
-      _importNamedSheet(item.longName);
+      _importNamedSheet(item.longName, false, false, false); // Do not trigger downstream sheets for single menu imports
     };
     
     // Range Trigger

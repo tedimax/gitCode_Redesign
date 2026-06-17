@@ -23,24 +23,24 @@ function onOpen() {
     .addItem('🆕 Start new reconciliation', 'vh.startReconciliation')
     .addItem('💾 Save reconciliation entries', 'vh.saveReconciliation');
 
-  // 2. Batch Import Submenu (to be added directly to the Main Menu)
-  const batchImportMenu = ui.createMenu('Batch import')
-    .addItem('⏳ Import pending sheets', 'vh.importPendingSheets')
-    .addItem('🔴 Set all sheets dirty', 'vh.markAllDirty')
-    .addItem('🟢 Set all sheets clean', 'vh.resetPendingSheets');
-
-  // 3. Import Named Sheets Submenu (uses the sheet config update method, i.e. vh.importSheet<Name>)
+  // 2. Import Named Sheets Submenu (uses the sheet config update method, i.e. vh.importSheet<Name>)
   const importNamedSheetsMenu = ui.createMenu('Import named sheet');
   CONFIG_CONSTANTS.CORE_SHEET_CONFIG.forEach(item => {
     const safeName = item.longName.replace(/[^a-zA-Z0-9]/g, '');
     importNamedSheetsMenu.addItem(item.label, `vh.importSheet${safeName}`);
   });
 
+  // 3. Batch Import Submenu
+  const batchImportMenu = ui.createMenu('Import other sheets')
+    .addItem('⏳ Import pending sheets', 'vh.importPendingSheets')
+    .addItem('🔴 Set all sheets dirty', 'vh.markAllDirty')
+    .addItem('🟢 Set all sheets clean', 'vh.resetPendingSheets')
+    .addSubMenu(importNamedSheetsMenu);
+
   const importMenu = ui.createMenu('Import')
     .addItem('📄 Import current sheet', 'vh.importActiveSheet')
     .addItem('🛠️ Repair manager', 'vh.showRepairManager')
-    .addSubMenu(importNamedSheetsMenu)
-    .addItem('🏁 Set all windows', 'vh.setAllWindows');
+    .addSubMenu(batchImportMenu);
 
   // 4. Set Ranges Submenu
   const namedRangeMenu = ui.createMenu('Set named sheet range');
@@ -52,7 +52,8 @@ function onOpen() {
   const rangeMenu = ui.createMenu('Set Ranges')
     .addItem('🏷️ Set current sheet range', 'vh.defineActiveSheetNamedRanges')
     .addItem('📏 Set all ranges', 'vh.defineAllNamedRanges')
-    .addSubMenu(namedRangeMenu);
+    .addSubMenu(namedRangeMenu)
+    .addItem('🏁 Set all windows', 'vh.setAllWindows');
 
   // 5. Annual Reports Submenu
   const runNamedYearMenu = ui.createMenu('Run named year');
@@ -88,10 +89,9 @@ function onOpen() {
   // Main Menu Assembly
   ui.createMenu('Village Hall')
     .addItem('🔑 Make keys in current sheet', 'vh.makeKeys')
+    .addItem('🧹 Deduplicate current sheet', 'vh.deduplicateActiveSheet')
     .addSeparator()
     .addSubMenu(reconMenu)
-    .addSeparator()
-    .addSubMenu(batchImportMenu)
     .addSeparator()
     .addSubMenu(importMenu)
     .addSeparator()

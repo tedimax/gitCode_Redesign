@@ -220,8 +220,80 @@ const Registry = (() => {
 
       // 3. Index DataTypes (Full Pass)
       this.hydrateTypes();
+
+      // 3.5. Resolve global sheet names and update constants maps
+      (CONFIG_CONSTANTS.GLOBAL_SHEET_NAMES || []).forEach(globalName => {
+        try {
+          const config = this.resolveGlobalSheetName(globalName);
+          const realLongName = config.LongName;
+          
+          myLog("info", "Registry: Resolved global sheet '%s' -> '%s'", globalName, realLongName);
+
+          // A. Update DEFAULT_ANNUAL_SUMMARY_SOURCE_TABLE if it matches
+          if (CONFIG_CONSTANTS.DEFAULT_ANNUAL_SUMMARY_SOURCE_TABLE === globalName) {
+            CONFIG_CONSTANTS.DEFAULT_ANNUAL_SUMMARY_SOURCE_TABLE = realLongName;
+          }
+          if (CONFIG_CONSTANTS.MERGED_TABLE_NAME === globalName) {
+            CONFIG_CONSTANTS.MERGED_TABLE_NAME = realLongName;
+          }
+          
+          // B. Update CORE_SHEET_CONFIG longName
+          const coreConfigItem = CONFIG_CONSTANTS.CORE_SHEET_CONFIG.find(item => item.longName === globalName);
+          if (coreConfigItem) {
+            coreConfigItem.longName = realLongName;
+          }
+          
+          // C. Update SHEET_DEPENDENCY_MAP keys and values
+          const depMap = CONFIG_CONSTANTS.SHEET_DEPENDENCY_MAP;
+          if (depMap) {
+            // Remap values in the dependency array lists
+            for (const [key, list] of Object.entries(depMap)) {
+              depMap[key] = list.map(v => v === globalName ? realLongName : v);
+            }
+            // Remap keys
+            if (depMap[globalName]) {
+              depMap[realLongName] = depMap[globalName];
+              delete depMap[globalName];
+            }
+          }
+          
+          // D. Update TABLE_COLUMN_MAP keys
+          const colMap = TABLE_COLUMN_MAP;
+          if (colMap && colMap[globalName]) {
+            colMap[realLongName] = colMap[globalName];
+            delete colMap[globalName];
+          }
+        } catch (e) {
+          throw e; // Propagate registry configuration errors to fail-fast
+        }
+      });
       
       myLog("info", "Registry hydrated: %d sheets, %d formula groups, %d types.", _sheets.size, _formulas.size, _dataTypes.size);
+    },
+
+    resolveGlobalSheetName(globalName) {
+      const cleanName = String(globalName || "").trim().toLowerCase();
+      const matches = [];
+      for (const config of _sheets.values()) {
+        const configSheetName = String(config.SheetName || "").trim();
+        const configLongName = String(config.LongName || "").trim();
+        
+        const isMatch = configSheetName.toLowerCase() === cleanName || 
+                        configLongName.toLowerCase().endsWith("_" + cleanName) ||
+                        configLongName.toLowerCase() === cleanName;
+        if (isMatch) {
+          matches.push(config);
+        }
+      }
+      
+      if (matches.length === 0) {
+        throw new Error(`Registry Hydration Error: Global sheet name '${globalName}' could not be resolved. Ensure a sheet with SheetName = '${globalName}' or ending with '_${globalName}' is configured in 'NewAccounts_Sheets'.`);
+      }
+      if (matches.length > 1) {
+        throw new Error(`Registry Hydration Error: Global sheet name '${globalName}' resolved to multiple rows in the registry: [${matches.map(m => m.LongName).join(", ")}]. Global sheet names must be uniquely defined exactly once.`);
+      }
+      
+      return matches[0];
     },
 
     lookupValue(pkValue, targetField) {
@@ -246,7 +318,23 @@ const Registry = (() => {
       }
       return config;
     },
-    getSheetConfigBySheetName: (sheetName) => _sheetsByName.get(String(sheetName || "").trim()),
+    getSheetConfigBySheetName: (sheetName, spreadsheetId = null) => {
+      const nameClean = String(sheetName || "").trim();
+      if (spreadsheetId) {
+        const lowerName = nameClean.toLowerCase();
+        for (const config of _sheets.values()) {
+          const configSheetName = String(config.SheetName || config.LongName.split('_').slice(1).join('_')).trim();
+          if (configSheetName.toLowerCase() === lowerName) {
+            const ssName = config.SpreadSheetName || config.LongName.split("_")[0];
+            const resolvedSsid = globals.ssMap ? globals.ssMap.get(ssName) : null;
+            if (resolvedSsid === spreadsheetId) {
+              return config;
+            }
+          }
+        }
+      }
+      return _sheetsByName.get(nameClean);
+    },
     getLongNameByPrefix(prefix) {
       if (!prefix) return null;
       const cleanPrefix = String(prefix).trim();
@@ -309,7 +397,21 @@ function initialize() {
   myLog("info", "Bootstrapping gitCode_Redesign system (" + (CONFIG_CONSTANTS.VERSION || "unknown") + ")...");
 
   // Stage 1: Anchor Spreadsheet
-  const anchorSS = SpreadsheetApp.openById(globals.defaultSSID);
+  let anchorSS = null;
+  try {
+    const activeSS = SpreadsheetApp.getActiveSpreadsheet();
+    if (activeSS && activeSS.getSheetByName(CONFIG_CONSTANTS.SHEETS_CONFIG_NAME)) {
+      anchorSS = activeSS;
+      globals.defaultSSID = activeSS.getId();
+      myLog("info", "Registry: Using Active Spreadsheet as Anchor: %s (ID: %s)", activeSS.getName(), globals.defaultSSID);
+    }
+  } catch (e) {
+    // Suppress if running in headless/non-container execution context
+  }
+  
+  if (!anchorSS) {
+    anchorSS = SpreadsheetApp.openById(globals.defaultSSID);
+  }
   globals.spreadsheetInstances[globals.defaultSSID] = anchorSS;
 
   // Stage 2: Sheets Config (The "Map of the World")
@@ -346,6 +448,16 @@ function initialize() {
   // Index initial sheets to enable lookupValue
   Registry.hydrate();
 
+  const getSpreadsheet = (longName) => {
+    const ssName = Registry.lookupValue(longName, "SpreadSheetName") || longName.split("_")[0];
+    const ssid = globals.ssMap.get(ssName) || globals.defaultSSID;
+    if (ssid === globals.defaultSSID) return anchorSS;
+    if (globals.spreadsheetInstances[ssid]) return globals.spreadsheetInstances[ssid];
+    const ss = SpreadsheetApp.openById(ssid);
+    globals.spreadsheetInstances[ssid] = ss;
+    return ss;
+  };
+
   // Stage 4: DataType Hydration (Registry-Driven)
   const dtName = CONFIG_CONSTANTS.DATATYPES_SHEET_NAME;
   const dtFirstRow = Registry.lookupValue(dtName, "FirstRow");
@@ -364,7 +476,7 @@ function initialize() {
     LabelRow: dtLabelRow,
     Key: dtKey
   };
-  globals.dataTypesObj = new Table(anchorSS, dtName, datatypesConfig);
+  globals.dataTypesObj = new Table(getSpreadsheet(dtName), dtName, datatypesConfig);
   globals.sheetInstances[dtName] = globals.dataTypesObj;
   
   const colOff = globals.dataTypesObj.getColOffset(datatypesConfig.Key);
@@ -399,7 +511,7 @@ function initialize() {
     LabelRow: fLabelRow,
     Key: fKey
   };
-  globals.formulasObj = new Table(anchorSS, fName, formulasConfig);
+  globals.formulasObj = new Table(getSpreadsheet(fName), fName, formulasConfig);
   globals.sheetInstances[fName] = globals.formulasObj;
   
   const fTargetOff = globals.formulasObj.getColOffset(formulasConfig.Key);
@@ -430,7 +542,7 @@ function initialize() {
   };
   
   try {
-    globals.correctionsObj = new Table(anchorSS, cName, correctionsConfig);
+    globals.correctionsObj = new Table(getSpreadsheet(cName), cName, correctionsConfig);
     globals.sheetInstances[cName] = globals.correctionsObj;
     PatchManager.hydrate();
   } catch (e) {

@@ -341,6 +341,23 @@ class Sheet {
   writeBlock(startRow, matrix) {
     if (!matrix || matrix.length === 0 || !matrix[0] || matrix[0].length === 0) return;
     myLog("info", "Writing " + matrix.length + " rows to " + this.sheetName + " starting at row " + startRow);
+    
+    // Auto-expand sheet rows if needed to prevent coordinates out of bounds error
+    const maxRows = this.sheet.getMaxRows();
+    const neededRows = startRow + matrix.length - 1;
+    if (neededRows > maxRows) {
+      this.sheet.insertRowsAfter(maxRows, neededRows - maxRows);
+      myLog("info", "Sheet %s: Expanded physical rows by %d (maxRows is now %d)", this.sheetName, neededRows - maxRows, neededRows);
+    }
+    
+    // Auto-expand sheet columns if needed
+    const maxCols = this.sheet.getMaxColumns();
+    const neededCols = matrix[0].length;
+    if (neededCols > maxCols) {
+      this.sheet.insertColumnsAfter(maxCols, neededCols - maxCols);
+      myLog("info", "Sheet %s: Expanded physical columns by %d (maxColumns is now %d)", this.sheetName, neededCols - maxCols, neededCols);
+    }
+
     const range = this.sheet.getRange(startRow, 1, matrix.length, matrix[0].length);
     range.setValues(matrix);
 
@@ -359,6 +376,23 @@ class Sheet {
     for (let chunkOff = 0; chunkOff < dataMatrix.length; chunkOff += chunkSize) {
       const chunk = dataMatrix.slice(chunkOff, chunkOff + chunkSize);
       this.writeBlock(startRow + chunkOff, chunk);
+    }
+  }
+
+  /**
+   * Physically deletes a row and decrements last row trackers to prevent coordinates errors
+   * and avoid a full sheet cache reload.
+   * @param {number} physicalRow 1-indexed physical row number.
+   */
+  deleteRow(physicalRow) {
+    if (!this.sheet) return;
+    this.sheet.deleteRow(physicalRow);
+
+    if (this._cachedLastRowIndex !== null && this._cachedLastRowIndex !== undefined) {
+      this._cachedLastRowIndex--;
+    }
+    if (this._maxWrittenRow) {
+      this._maxWrittenRow = Math.max(0, this._maxWrittenRow - 1);
     }
   }
 

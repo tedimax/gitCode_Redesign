@@ -119,7 +119,7 @@ class UpdateTable extends Table {
       }
 
       const isReplace = normalizedMode === "replace" || normalizedMode === "replacerows";
-      const hasChanges = isReplace || stats.added > 0 || stats.updated > 0;
+      const hasChanges = isReplace || stats.added > 0 || stats.updated > 0 || (stats.deleted && stats.deleted > 0);
 
       if (hasChanges) {
         // 4. Post-persistence: Flush buffered writes BEFORE sorting.
@@ -152,9 +152,6 @@ class UpdateTable extends Table {
       throw new Error(`Configuration Error: SortField '${sortField}' not found in table '${this.longName}'. Please check the registry.`);
     }
 
-    // With the new caching optimization, pending writes are tracked via _maxWrittenRow,
-    // completely eliminating the need to trigger a massive, slow SpreadsheetApp.flush() here.
-
     const lastRow = this.getLastRowIndex();
     if (lastRow <= this.firstDataRowIndex) return;
 
@@ -165,116 +162,38 @@ class UpdateTable extends Table {
 
     if (numRows > 0 && numCols > 0) {
       const range = this.sheet.getRange(this.firstDataRowIndex, 1, numRows, numCols);
-      range.sort({ column: physicalCol, ascending: true });
-      myLog("info", "Sorted %s by %s (Col %d)", this.longName, sortField, physicalCol);
+
+      // Build a stable sort spec: primary = SortField, secondary = Sequence (or PK if Sequence is not present)
+      // (preserves source order for rows that share the same date, e.g. two balance snapshots on 31 Mar).
+      const sortSpec = [{ column: physicalCol, ascending: true }];
+      const seqOffset = this.getColOffset("Sequence");
+      if (seqOffset !== -1 && seqOffset + 1 !== physicalCol) {
+        sortSpec.push({ column: seqOffset + 1, ascending: true });
+        range.sort(sortSpec);
+        myLog("info", "Sorted %s by %s (Col %d) + Sequence tiebreak (Col %d)", this.longName, sortField, physicalCol, seqOffset + 1);
+      } else {
+        const pkOffset = this.getColOffset("pk");
+        if (pkOffset !== -1 && pkOffset + 1 !== physicalCol) {
+          sortSpec.push({ column: pkOffset + 1, ascending: true });
+        }
+        range.sort(sortSpec);
+        myLog("info", "Sorted %s by %s (Col %d) + PK tiebreak", this.longName, sortField, physicalCol);
+      }
     }
   }
 
 
 
-  /**
-   * REPLACE Mode: Wipes all data and writes the fresh matrix.
-   */
   _persistReplace(newData) {
     this.clearDataArea();
 
-    let processedData = newData;
-
     if (newData.length > 0) {
-      let sourceSheet = null;
-      try {
-        if (typeof Utils !== 'undefined' && typeof Utils.getSourceSheet === 'function') {
-          sourceSheet = Utils.getSourceSheet(this);
-        }
-      } catch (e) {
-        // Safe bypass
-      }
-
-      if (sourceSheet) {
-        const isUnion = sourceSheet.constructor.name === "UnionTable" || typeof sourceSheet._ensureSources === 'function';
-
-        if (isUnion) {
-          processedData = this._applyUnionDateFilter(newData);
-        } else {
-          // Slice by source slack offset for standard 1:1 ledger sync
-          const sourceFirstRow = sourceSheet.absoluteFirstRow || 2;
-          const sourceFirstDataRow = sourceSheet.firstDataRowIndex || 2;
-          const sourceSlackOffset = Math.max(0, sourceFirstRow - sourceFirstDataRow);
-          if (sourceSlackOffset > 0 && newData.length > sourceSlackOffset) {
-            processedData = newData.slice(sourceSlackOffset);
-            myLog("info", "Standard ledger sync: sliced %d slack rows from source payload.", sourceSlackOffset);
-          }
-        }
-      }
-
       const writeStartRow = this.absoluteFirstRow || this.firstDataRowIndex;
-      if (processedData.length > 0) {
-        this.writeChunks(writeStartRow, processedData);
-      }
+      this.writeChunks(writeStartRow, newData);
     }
     
-    myLog("info", "Replace complete: %d rows written to %s.", processedData.length, this.longName);
-    return { added: processedData.length, updated: 0 };
-  }
-
-  /**
-   * Filters input data for a UnionTable sync by removing records older than the target boundary date.
-   * The boundary date is resolved in order of priority:
-   * 1. The date value present in the row immediately preceding absoluteFirstRow.
-   * 2. A fallback April 1st date parsed from the sheet's name if a year (20XX) is present.
-   * 
-   * @param {Array<Array<any>>} newData - The raw input dataset.
-   * @returns {Array<Array<any>>} The filtered dataset.
-   * @private
-   */
-  _applyUnionDateFilter(newData) {
-    const dateFieldName = this.getProperty("DateField") || "Date";
-    const dateColOffset = this.getColOffset(dateFieldName);
-    if (dateColOffset === -1) {
-      return newData;
-    }
-
-    let targetBoundaryDate = null;
-    const labelRowIdx = Number(this.getProperty("LabelRow")) || 1;
-    const prevRowIndex = this.absoluteFirstRow - 1;
-
-    // 1. Attempt to get boundary date from the row directly above absoluteFirstRow
-    if (this.sheet && prevRowIndex > labelRowIdx) {
-      const rawDate = this.sheet.getRange(prevRowIndex, dateColOffset + 1).getValue();
-      if (rawDate) {
-        const parsed = rawDate instanceof Date ? rawDate : new Date(rawDate);
-        if (!isNaN(parsed.getTime())) {
-          targetBoundaryDate = parsed;
-        }
-      }
-    }
-
-    // 2. Fallback: Parse year from sheet name (e.g., "Ledger 2026") and default to April 1st
-    if (!targetBoundaryDate) {
-      const yearMatch = this.sheetName.match(/\b(20\d{2})\b/);
-      if (yearMatch) {
-        targetBoundaryDate = new Date(Number(yearMatch[1]), 3, 1);
-      }
-    }
-
-    if (!targetBoundaryDate) {
-      return newData;
-    }
-
-    // 3. Filter out rows that are strictly before the boundary date
-    const boundaryTime = targetBoundaryDate.getTime();
-    const filtered = newData.filter(row => {
-      const rawVal = row[dateColOffset];
-      if (!rawVal) return true; // Keep row if no date is provided
-      const valDate = rawVal instanceof Date ? rawVal : new Date(rawVal);
-      if (isNaN(valDate.getTime())) return true; // Keep row if date is invalid
-      return valDate.getTime() >= boundaryTime;
-    });
-
-    myLog("info", "UnionTable filter: Kept %d of %d rows matching date boundary >= %s", 
-      filtered.length, newData.length, targetBoundaryDate.toISOString().split('T')[0]);
-
-    return filtered;
+    myLog("info", "Replace complete: %d rows written to %s.", newData.length, this.longName);
+    return { added: newData.length, updated: 0 };
   }
 
   /**
@@ -313,8 +232,38 @@ class UpdateTable extends Table {
       this.writeChunks(startRow, rowsToAdd);
     }
 
-    myLog("info", "Update complete for %s: %d updated (dirty), %d added.", this.longName, rowsToUpdate.length, rowsToAdd.length);
-    return { added: rowsToAdd.length, updated: rowsToUpdate.length };
+    // 4. Process any pending deletions last
+    let deletedCount = 0;
+    if (this._pksToDelete && this._pksToDelete.size > 0) {
+      myLog("info", "UpdateTable: Processing %d pending deletions for %s...", this._pksToDelete.size, this.longName);
+      
+      const offsetsToDelete = [];
+      this._pksToDelete.forEach(pk => {
+        const pkLower = String(pk).toLowerCase().trim();
+        const offset = this.getHashKeyMap().get(pkLower);
+        if (offset !== undefined) {
+          offsetsToDelete.push(offset);
+        }
+      });
+      
+      // Sort descending to prevent shifting issues during deletion
+      offsetsToDelete.sort((a, b) => b - a);
+      
+      offsetsToDelete.forEach(offset => {
+        const physicalRow = (this._windowStartRow !== null ? this._windowStartRow : this.firstDataRowIndex) + offset;
+        myLog("info", "UpdateTable: Deleting physical row %d from %s", physicalRow, this.longName);
+        this.deleteRow(physicalRow);
+      });
+      
+      deletedCount = offsetsToDelete.length;
+      this._pksToDelete.clear();
+      
+      // Invalidate cache since row positions shifted
+      this.clearCache();
+    }
+
+    myLog("info", "Update complete for %s: %d updated (dirty), %d added, %d deleted.", this.longName, rowsToUpdate.length, rowsToAdd.length, deletedCount);
+    return { added: rowsToAdd.length, updated: rowsToUpdate.length, deleted: deletedCount };
   }
 
   /**
@@ -339,7 +288,7 @@ class UpdateTable extends Table {
       // Scenario A: The row key already exists in the destination sheet (potential update)
       if (existingRowOff !== undefined) {
         // Enforce Read-Only Slack Window: Do not update historical rows that lie before the absolute start row boundary
-        const physicalRowIndex = this.firstDataRowIndex + existingRowOff;
+        const physicalRowIndex = (this._windowStartRow !== null ? this._windowStartRow : this.firstDataRowIndex) + existingRowOff;
         if (this.absoluteFirstRow && physicalRowIndex < this.absoluteFirstRow) {
           return; // Skip updates to locked/historical entries
         }
@@ -349,6 +298,11 @@ class UpdateTable extends Table {
         
         // Scan each column to determine if any field values have changed (is dirty)
         const isDirty = newRow.some((newVal, colOff) => {
+          const columnName = labels[colOff];
+          if (columnName && columnName.toLowerCase() === "sequence") {
+            return false;
+          }
+
           const fieldType = fieldTypes[colOff];
           
           // Normalize both values using the defined schema type for the column
@@ -432,7 +386,7 @@ class UpdateTable extends Table {
   _writeRowBlock(rowBlock) {
     if (rowBlock.length === 0) return;
     
-    const startRow = this.firstDataRowIndex + rowBlock[0].offset;
+    const startRow = (this._windowStartRow !== null ? this._windowStartRow : this.firstDataRowIndex) + rowBlock[0].offset;
     const matrix = rowBlock.map(item => item.data);
     this.writeBlock(startRow, matrix);
   }

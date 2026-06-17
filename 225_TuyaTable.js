@@ -468,7 +468,7 @@ class TuyaTable extends UpdateTable {
   deleteRowByOffset(rowOffset) {
     const physicalRow = this.firstDataRowIndex + rowOffset;
     if (this.sheet && physicalRow <= this.sheet.getLastRow()) {
-      this.sheet.deleteRow(physicalRow);
+      this.deleteRow(physicalRow);
       this.clearCache();
       this._isHashed = false;
     }

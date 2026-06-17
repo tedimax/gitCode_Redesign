@@ -39,7 +39,7 @@ class ReconcileTable extends ReconcileProcessor {
     const existingTxMap = this._loadExistingManualTxIds();
 
     // 2. Extract unreconciled rows from Merged sheet
-    const mergedTable = getSheetInstance("AnnualSummaries_Merged");
+    const mergedTable = getSheetInstance(CONFIG_CONSTANTS.MERGED_TABLE_NAME);
     const unreconciledRows = this._extractUnreconciledRows(mergedTable, existingTxMap);
 
     if (unreconciledRows.length === 0) {
@@ -53,8 +53,43 @@ class ReconcileTable extends ReconcileProcessor {
     const parentMap = this._buildUnionFindGroups(unreconciledRows);
     this._resolveGroupRepresentatives(unreconciledRows, parentMap);
 
+    // Filter out groups that are entirely before or at the FirstRow (previous FY)
+    const absoluteFirstRow = mergedTable.absoluteFirstRow;
+    const firstDataRowIndex = mergedTable.firstDataRowIndex;
+
+    const rowsByGroupRoot = new Map();
+    unreconciledRows.forEach(row => {
+      const rootPK = row.rootRow.PK;
+      if (!rowsByGroupRoot.has(rootPK)) {
+        rowsByGroupRoot.set(rootPK, []);
+      }
+      rowsByGroupRoot.get(rootPK).push(row);
+    });
+
+    const validGroupRoots = new Set();
+    rowsByGroupRoot.forEach((rows, rootPK) => {
+      const hasCurrentFYRow = rows.some(row => {
+        const physicalRowIndex = firstDataRowIndex + row.rowOffset;
+        return !absoluteFirstRow || physicalRowIndex > absoluteFirstRow;
+      });
+      if (hasCurrentFYRow) {
+        validGroupRoots.add(rootPK);
+      } else {
+        myLog("info", "Reconcile: Rejecting group %s because all its rows are before or at the FirstRow (row %d).", rootPK, absoluteFirstRow);
+      }
+    });
+
+    const filteredRows = unreconciledRows.filter(row => validGroupRoots.has(row.rootRow.PK));
+
+    if (filteredRows.length === 0) {
+      myLog("info", "No unreconciled rows remaining after filtering out historical groups.");
+      this.clearDataArea();
+      this.restoreFormulas();
+      return;
+    }
+
     // 4. Sort rows using Group-Priority sorting (keeps connected groups contiguous)
-    const sortedRows = this._sortGroupedRows(unreconciledRows);
+    const sortedRows = this._sortGroupedRows(filteredRows);
 
     // 5. Assign Transaction IDs & generate output data
     const nextTxId = this._calculateNextTransactionId(existingTxMap);
@@ -181,7 +216,7 @@ class ReconcileTable extends ReconcileProcessor {
     try {
       groupsTable.persist(groupsNewData, "add");
     } catch (e) {
-      throw new Error(`CRITICAL CONFIG ERROR: AnnualSummaries_Groups failed to persist. Ensure it is configured as an UpdateTable. Original error: ${e.message}`);
+      throw new Error(`CRITICAL CONFIG ERROR: Reconciliation_Groups failed to persist. Ensure it is configured as an UpdateTable. Original error: ${e.message}`);
     }
 
     if (logNewData.length > 0) {
@@ -221,7 +256,7 @@ class ReconcileTable extends ReconcileProcessor {
       }
       const ledgerName = this._getLedgerNameFromPrefix(prefixMatch[1]);
       if (!ledgerName) {
-        throw new Error(`CRITICAL: Cannot resolve ledger name from prefix '${prefixMatch[1]}' (PK: '${tx.PK}'). Check SourceSheets config for AnnualSummaries_Merged.`);
+        throw new Error(`CRITICAL: Cannot resolve ledger name from prefix '${prefixMatch[1]}' (PK: '${tx.PK}'). Check SourceSheets config for ${CONFIG_CONSTANTS.MERGED_TABLE_NAME}.`);
       }
       if (!txsByLedger.has(ledgerName)) txsByLedger.set(ledgerName, []);
       txsByLedger.get(ledgerName).push(tx);

@@ -6,6 +6,7 @@
  */
 const globals = {
   initialized: false,
+  enableAuditAnalysis: true,   // Global toggle to enable/disable audit sheet reporting
   ssMap: new Map(),           // SpreadsheetName -> SSID
   sheetInstances: {},         // longName -> Instance
   spreadsheetInstances: {},    // SSID -> Spreadsheet Object
