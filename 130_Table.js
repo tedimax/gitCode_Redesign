@@ -7,28 +7,7 @@
  */
 class Table extends Sheet {
   constructor(ss, longName, properties = null) {
-    super(ss, longName, properties);
-    // Semi-private logic stores
-    let registryProps = {};
-    if (typeof Registry !== 'undefined') {
-      try {
-        registryProps = Registry.getSheetConfig(longName);
-      } catch (e) {
-        // Hard fail at Level 2 if no properties provided and not bootstrapping
-        if (!properties && longName !== CONFIG_CONSTANTS.SHEETS_CONFIG_NAME) {
-          throw e;
-        }
-      }
-    }
-    const rawProps = Object.assign({}, registryProps, properties || {});
-    
-    this._properties = {};
-    if (rawProps) {
-      for (const key in rawProps) {
-        this._properties[key.toLowerCase().trim()] = rawProps[key];
-      }
-    }
-    
+    super(ss, longName, properties);    
     this._columnMap = new Map();
     this._hashKeyMap = new Map();
     this._isHashed = false;

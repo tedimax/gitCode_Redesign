@@ -54,7 +54,7 @@ class AnnualSheet extends UpdateTable {
    * Fluent API: Forces a full scan of the source data.
    */
   withFullLoad(isFull = true) {
-    this._config.FullLoad = isFull;
+    this._properties.FullLoad = isFull;
     return this;
   }
 
@@ -72,19 +72,19 @@ class AnnualSheet extends UpdateTable {
    * Orchestration: Generates a 2D matrix for a specific year.
    */
   prepare(yearArg) {
-    const targetYear = yearArg || this._targetYear || this._config.year || this.sheetName.split("_")[0];
+    const targetYear = yearArg || this._targetYear || this._properties.year || this.sheetName.split("_")[0];
     myLog("info", "AnnualSheet: Orchestrating report for %s", targetYear);
 
     // 1. Load Facts (Strategy: Configurable Load)
     const start = Date.now();
-    const isFullLoad = this._config.FullLoad === true || this._config.FullLoad === "true";
-    
+    const isFullLoad = this._properties.FullLoad === true || this._properties.FullLoad === "true";
+
     if (isFullLoad) {
       this.ledger.loadFull();
     } else {
       this.ledger.loadYear(targetYear);
     }
-    
+
     const facts = this.ledger.getFacts();
     const loadMode = isFullLoad ? "Full Scan" : "Targeted Scan";
     myLog("info", "Performance: %s for %s took %dms.", loadMode, targetYear, Date.now() - start);
@@ -95,14 +95,14 @@ class AnnualSheet extends UpdateTable {
     const analysisStart = Date.now();
     const report = this.reporter.getYearlyReport(facts, targetYear);
     myLog("info", "Performance: Longitudinal Analysis (11 years) took %dms.", Date.now() - analysisStart);
-    
+
     if (!report) {
       const available = Array.from(facts.yearlyData.keys()).sort().join(", ");
       throw new Error(`AnnualReporter: No data found for year "${targetYear}". Records found for: [${available}].`);
     }
 
     // 3. Render matrix from Renderer
-    const matrix = this.renderer.render(report, this._config.layout || "standard");
+    const matrix = this.renderer.render(report, this._properties.layout || "standard");
 
     return matrix;
   }
@@ -145,7 +145,7 @@ class AnnualSheet extends UpdateTable {
       if (!s) return;
 
       const range = targetSheet.getRange(startRow + instr.range.rowOffset, instr.range.col, instr.range.numRows, instr.range.numCols);
-      
+
       Object.entries(s).forEach(([key, val]) => {
         switch (key) {
           case "merge": if (val) range.merge(); break;

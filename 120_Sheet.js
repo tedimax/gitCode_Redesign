@@ -6,40 +6,40 @@
  * Manages the connection to Google Sheets and the windowed data matrix.
  */
 class Sheet {
-  constructor(ss, longName, config = null) {
+  constructor(ss, longName, properties = null) {
     // Semi-private fields for data isolation
     this._window = [];
-    
+
     // 1. Resolve Hybrid Config (Registry + Overrides)
-    let baseConfig = {};
+    let registryProperties = {};
     if (typeof Registry !== 'undefined') {
       try {
-        baseConfig = Registry.getSheetConfig(longName);
+        registryProperties = Registry.getSheetConfig(longName);
       } catch (e) {
         // Only throw if NO config was passed and it's not the bootstrap table
-        if (!config && longName !== CONFIG_CONSTANTS.SHEETS_CONFIG_NAME) {
+        if (!properties && longName !== CONFIG_CONSTANTS.SHEETS_CONFIG_NAME) {
           throw e;
         }
       }
     }
-    const rawConfig = Object.assign({}, baseConfig, config || {});
-    
+    const rawProperties = Object.assign({}, registryProperties, properties || {});
+
     // Standardize: Lowercase and Trim all property keys for O(1) lookup
-    this._config = {};
-    for (const key in rawConfig) {
-      this._config[key.toLowerCase().trim()] = rawConfig[key];
+    this._properties = {};
+    for (const key in rawProperties) {
+      this._properties[key.toLowerCase().trim()] = rawProperties[key];
     }
 
     this.ss = ss;
     this.longName = longName;
     const nameParts = longName.split("_");
-    if (nameParts.length !== 2 && !this._config.SheetName) {
+    if (nameParts.length !== 2 && !this._properties.SheetName) {
       throw new Error(`Naming Failure: The longName "${longName}" is invalid. It must follow the "Spreadsheet_Sheet" convention (e.g., "Ledgers_Bank") or have an explicit "SheetName" override in the Registry.`);
     }
     const [ssContext, sheetContext] = nameParts;
-    this.sheetName = String(this._config.sheetname || sheetContext).trim();
+    this.sheetName = String(this._properties.sheetname || sheetContext).trim();
     this.sheet = ss.getSheetByName(this.sheetName);
-    
+
     if (!this.sheet) {
       const ssid = ss.getId();
       throw new Error(`Physical Sheet Missing: The physical Google Sheet named "${this.sheetName}" was not found inside the spreadsheet (ID: "${ssid}").\n\n` +
@@ -47,8 +47,8 @@ class Sheet {
     }
 
     // Windows state
-    this.absoluteFirstRow = Number(this._config.firstrow) || 2;
-    const slackRows = Number(this._config.windowslack) || 0;
+    this.absoluteFirstRow = Number(this._properties.firstrow) || 2;
+    const slackRows = Number(this._properties.windowslack) || 0;
     this.firstDataRowIndex = Math.max(2, this.absoluteFirstRow - slackRows);
     this.windowDataLength = 0;
     this.currentRowOffset = 0;
@@ -171,17 +171,17 @@ class Sheet {
    */
   _resolveRequestedRange(startRow, numRows) {
     const resolvedStart = (startRow === undefined || startRow === null) ? this.firstDataRowIndex : startRow;
-    
+
     // Utilize the built-in lazy cache to prevent redundant API calls!
-    const physicalLastRow = this.getLastRowIndex(); 
-    
+    const physicalLastRow = this.getLastRowIndex();
+
     const lastCol = this.getLastColumnIndex();
-    
+
     const count = (numRows === undefined || numRows === null) ? Math.max(0, physicalLastRow - resolvedStart + 1) : numRows;
-    
+
     // myLog("trace", "Sheet [%s] Dimension Audit: startRow=%d, physicalLastRow=%d", 
     //   this.longName, resolvedStart, physicalLastRow);
-      
+
     return { start: resolvedStart, numRows: count, lastCol: lastCol };
   }
 
@@ -241,7 +241,7 @@ class Sheet {
    */
   _findLastPopulatedIndex(matrix) {
     if (!matrix || matrix.length === 0) return -1;
-    
+
     for (let i = matrix.length - 1; i >= 0; i--) {
       // Check if row has any non-empty content
       const hasData = matrix[i].some(cell => cell !== "" && cell !== null && cell !== undefined);
@@ -265,18 +265,18 @@ class Sheet {
 
     const lastCol = this.getLastColumnIndex();
     const lastRow = this.sheet.getLastRow();
-    
+
     if (lastCol === 0 || lastRow < this.firstDataRowIndex) {
       this._cachedLastRowIndex = this.firstDataRowIndex - 1;
       return this._cachedLastRowIndex;
     }
-    
+
     // Fetch the values up to the API's idea of lastRow
     const numRows = (lastRow - this.firstDataRowIndex) + 1;
     const values = this.sheet.getRange(this.firstDataRowIndex, 1, numRows, lastCol).getValues();
-    
+
     const lastIdx = this._findLastPopulatedIndex(values);
-    
+
     // Convert 0-indexed array offset back to 1-indexed physical row
     this._cachedLastRowIndex = (lastIdx === -1) ? this.firstDataRowIndex - 1 : (this.firstDataRowIndex + lastIdx);
     return Math.max(this._cachedLastRowIndex, this._maxWrittenRow || 0);
@@ -341,7 +341,7 @@ class Sheet {
   writeBlock(startRow, matrix) {
     if (!matrix || matrix.length === 0 || !matrix[0] || matrix[0].length === 0) return;
     myLog("info", "Writing " + matrix.length + " rows to " + this.sheetName + " starting at row " + startRow);
-    
+
     // Auto-expand sheet rows if needed to prevent coordinates out of bounds error
     const maxRows = this.sheet.getMaxRows();
     const neededRows = startRow + matrix.length - 1;
@@ -349,7 +349,7 @@ class Sheet {
       this.sheet.insertRowsAfter(maxRows, neededRows - maxRows);
       myLog("info", "Sheet %s: Expanded physical rows by %d (maxRows is now %d)", this.sheetName, neededRows - maxRows, neededRows);
     }
-    
+
     // Auto-expand sheet columns if needed
     const maxCols = this.sheet.getMaxColumns();
     const neededCols = matrix[0].length;
@@ -417,9 +417,9 @@ class Sheet {
    * Uses StringUtils.toRangeName for strict sanitation.
    */
   writeNamedRanges() {
-    const labels = this.sheet.getRange(this._config.labelrow || 1, 1, 1, this.getLastColumnIndex()).getValues()[0];
+    const labels = this.sheet.getRange(this._properties.labelrow || 1, 1, 1, this.getLastColumnIndex()).getValues()[0];
     const sheetNameClean = StringUtils.toRangeName(this.sheetName);
-    
+
     const physicalDataLength = Math.max(1, this.getLastRowIndex() - this.firstDataRowIndex + 1);
 
     // 1. Data Area Range (e.g. SS_NominalsData)
