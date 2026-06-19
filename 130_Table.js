@@ -7,7 +7,7 @@
  */
 class Table extends Sheet {
   constructor(ss, longName, properties = null) {
-    super(ss, longName, properties);    
+    super(ss, longName, properties);
     this._columnMap = new Map();
     this._hashKeyMap = new Map();
     this._isHashed = false;
@@ -56,18 +56,18 @@ class Table extends Sheet {
     const labelRowRaw = this.getProperty("LabelRow");
     // Coerce to a number to ensure type-safe comparison (e.g. string "0" vs number 0)
     const labelRow = (labelRowRaw === null || labelRowRaw === undefined || labelRowRaw === "") ? 1 : Number(labelRowRaw);
-    
+
     // 1. Capture and trim labels in their physical order (Skip if LabelRow is 0)
-    const rawLabels = (labelRow === 0) ? [] : this._fetchHeaderRow(labelRow);
+    const rawLabels = (labelRow === 0) ? [] : this._fetchRowValues(labelRow);
     this._labels = rawLabels.map(label => String(label || "").trim());
-    
+
     // 2. Build the lookup map functionally (Label -> Offset)
     this._columnMap = new Map(
       this._labels
         .map((label, offset) => [label, offset])
         .filter(([label]) => label !== "")
     );
-    
+
     // 3. Fail Fast: If no physical labels found but LabelRow is not 0, throw an error!
     if (this._columnMap.size === 0 && labelRow !== 0) {
       throw new Error(`[Schema Error: ${this.longName}] Physical sheet has no headers at row ${labelRow}. ` +
@@ -75,7 +75,7 @@ class Table extends Sheet {
     } else if (labelRow === 0) {
       myLog("trace", "Table %s: Confirmed as Raw/Output sheet (LabelRow=0).", this.longName);
     }
-    
+
     myLog("trace", "Initialized columnMap for %s with %d labels", this.longName, this._columnMap.size);
   }
 
@@ -111,7 +111,7 @@ class Table extends Sheet {
    * Lazy accessor for the list of column labels.
    */
   getLabels() {
-    this._ensureHeaderMap();
+    if (!this._labels) this.initializeHeaderMap();
     return this._labels || [];
   }
 
@@ -127,20 +127,25 @@ class Table extends Sheet {
    * O(1) Column Index Resolver
    */
   getColOffset(name) {
-    this._ensureHeaderMap();
     if (!name) return -1;
-    const searchName = String(name).toLowerCase().trim();
-    
-    // 1. Try exact match (Fast)
+    if (!this._labels) this.initializeHeaderMap();
+
+    // 1. Try exact match (Fastest, zero overhead)
     let off = this._columnMap.get(name);
     if (off !== undefined) return off;
-    
-    // 2. Try case-insensitive match (Fallback)
-    for (const [label, offset] of this._columnMap.entries()) {
-      if (label.toLowerCase() === searchName) return offset;
+
+    // 2. Exact match failed. Lazy-initialize the lowercase map if it doesn't exist yet
+    if (!this._lowercaseColumnMap) {
+      this._lowercaseColumnMap = new Map();
+      for (const [label, offset] of this._columnMap.entries()) {
+        this._lowercaseColumnMap.set(String(label).trim().toLowerCase(), offset);
+      }
     }
-    
-    return -1;
+
+    // 3. High-speed lookup in the newly cached map
+    const searchName = String(name).trim().toLowerCase();
+    off = this._lowercaseColumnMap.get(searchName);
+    return off !== undefined ? off : -1;
   }
 
   /**
@@ -212,7 +217,7 @@ class Table extends Sheet {
       if (rowOffset < 0 || rowOffset >= this.windowDataLength) {
         throw new Error(`Invalid row offset ${rowOffset} for object conversion. Window length: ${this.windowDataLength}`);
       }
-      
+
       return Array.from(this._columnMap.entries()).reduce((obj, [label, colOff]) => {
         obj[label] = this.get(rowOffset, colOff);
         return obj;
@@ -242,7 +247,7 @@ class Table extends Sheet {
 
       // Resolve which physical range needs validation
       const winEndRow = this._windowStartRow + this.windowDataLength - 1;
-      
+
       // We only validate rows that haven't been validated in this session
       const validateStart = this._validStartRow ? Math.min(this._windowStartRow, this._validStartRow) : this._windowStartRow;
       const validateEnd = this._validEndRow ? Math.max(winEndRow, this._validEndRow) : winEndRow;
@@ -255,10 +260,10 @@ class Table extends Sheet {
         const rowOff = pRow - this._windowStartRow;
         const row = this._window[rowOff];
         const keyValue = this.getRowKey(row);
-        
+
         // If the row has no key, it is a comment or spacer row. Bypass validation entirely.
         if (keyValue === null || keyValue === "") continue;
-        
+
         let isCleared = true;
         let rawCleared = "true";
         if (clearedOff !== -1) {
@@ -276,11 +281,11 @@ class Table extends Sheet {
           const context = { row: pRow, col: label, sheet: this.longName };
           const val = TypeUtils.castType(cell, type);
           TypeUtils.validate(val, type, context);
-          
+
           // Only enforce transaction-level mandatory field validation for actual financial ledger or merged/group sheets
-          const isTransactionTable = this.longName.startsWith("Ledgers_") || 
-                                     this.longName === CONFIG_CONSTANTS.MERGED_TABLE_NAME || 
-                                     this.longName === "Reconciliation_UnChecked";
+          const isTransactionTable = this.longName.startsWith("Ledgers_") ||
+            this.longName === CONFIG_CONSTANTS.MERGED_TABLE_NAME ||
+            this.longName === "Reconciliation_UnChecked";
 
           let isMandatory = isTransactionTable && (CONFIG_CONSTANTS.MANDATORY_TABLE_FIELDS || []).includes(label);
           const entryType = entryTypeOff !== -1 ? String(row[entryTypeOff] || "").trim().toUpperCase() : "ACTIVITY";
@@ -293,7 +298,7 @@ class Table extends Sheet {
 
           // Rule 3: FY is mandatory for all Account balance snapshots, but for anything else (Activity, etc), it's only mandatory if Cleared
           if (label === "FY") {
-             if (entryType !== "ACCOUNT" && !isCleared) isMandatory = false;
+            if (entryType !== "ACCOUNT" && !isCleared) isMandatory = false;
           }
 
           // Note: Core fields (PK, Amount, Account) remain mandatory regardless of state.
@@ -302,7 +307,7 @@ class Table extends Sheet {
             const stateInfo = `[Type: ${entryType}, Cleared: ${isCleared} (raw: "${rawCleared}")]`;
             throw new Error(`Validation Error ${stateInfo}: Mandatory field "${label}" is empty at row ${pRow} [Key: ${keyValue}].`);
           }
-          
+
           if (isMandatory && label === "Group" && Number(val) === 0) {
             throw new Error(`Validation Error: Group ID cannot be zero at row ${pRow} [Key: ${keyValue}].`);
           }
@@ -331,7 +336,7 @@ class Table extends Sheet {
   ensureRows(count) {
     const totalLast = this.getLastRowIndex();
     const targetStart = Math.max(this.firstDataRowIndex, totalLast - count + 1);
-    
+
     if (!this._windowStartRow || targetStart < this._windowStartRow) {
       this.fetch(targetStart);
     }
@@ -360,13 +365,13 @@ class Table extends Sheet {
         // PRIORITY 1: Single Key
         // If a 'Key' is explicitly defined (e.g., "PK"), it overrides everything else.
         const keyOffset = this.getColOffset(targetKeyField);
-        
+
         // Fail-Fast: If the configured Key column doesn't exist in the physical sheet, crash immediately.
         if (keyOffset === -1) {
           const labels = this.getLabels();
           throw new Error(`CRITICAL: Key column '${targetKeyField}' not found in ${this.longName}. Available Columns: [${labels.join(", ")}]`);
         }
-        
+
         // Cache the metadata schema
         this._keyMetadata = {
           type: "single",
@@ -375,20 +380,20 @@ class Table extends Sheet {
         };
         break;
       }
-      
+
       case !!keyFieldsRaw: {
         // PRIORITY 2: Composite Key (Fallback)
         // If no Single Key exists, check if multiple columns are grouped to form a unique hash.
         const fieldList = String(keyFieldsRaw).split(",").map(field => field.trim());
-        
+
         this._keyMetadata = {
           type: "composite",
           fields: fieldList.map(field => {
             const fieldOffset = this.getColOffset(field);
-            
+
             // Fail-Fast: Every sub-field in the composite key must physically exist.
             if (fieldOffset === -1) throw new Error("CRITICAL: KeyField '" + field + "' not found in " + this.longName);
-            
+
             return {
               offset: fieldOffset,
               type: TypeUtils.getType(this.longName, field)
@@ -397,13 +402,13 @@ class Table extends Sheet {
         };
         break;
       }
-      
+
       default:
         // FAIL-FAST: A Table without a defined Primary Key cannot safely perform Replace/Update operations.
         const available = Object.keys(this._properties).join(", ");
         throw new Error(`CRITICAL: Table ${this.longName} has no 'Key' or 'KeyFields' configured in the registry. Available properties: [${available}]. Check your spreadsheet column headers.`);
     }
-    
+
     return this._keyMetadata;
   }
 
@@ -416,15 +421,15 @@ class Table extends Sheet {
     try {
       // 1. Fetch the cached metadata schema (Single vs Composite)
       const meta = this.getKeyMetadata();
-      
+
       if (meta.type === "single") {
         // --- SINGLE KEY RESOLUTION ---
         const rawVal = row[meta.offset];
-        
+
         // "Ghost Row" Guard: If the primary key cell is entirely empty, treat the row as a spacer/ghost row.
         // Returning null signals to the engine that this row should be skipped entirely.
         if (rawVal === undefined || rawVal === "") return null;
-        
+
         // Cast the value strictly according to the TypeUtils definition to ensure exact matching 
         // (e.g. converting numeric strings to numbers, formatting dates)
         const val = TypeUtils.castType(rawVal, meta.fieldType);
@@ -432,26 +437,26 @@ class Table extends Sheet {
       } else {
         // --- COMPOSITE KEY RESOLUTION ---
         if (meta.fields.length === 0) return null;
-        
+
         let allEmpty = true;
-        
+
         // Map over all configured composite fields to build a pipe-delimited string of values
         const compositeValue = meta.fields.map(fieldMeta => {
           const rawCell = row[fieldMeta.offset];
-          
+
           // Track if the entire composite footprint is blank (another Ghost Row check)
           if (rawCell !== undefined && rawCell !== null && String(rawCell).trim() !== "") {
             allEmpty = false;
           }
-          
+
           // Strictly cast and normalize each piece of the composite key to guarantee consistent hashing
           const val = TypeUtils.castType(rawCell, fieldMeta.type);
           return String(val || "").trim().toLowerCase();
         }).join("|");
-        
+
         // If every single column that makes up the composite key is empty, it's a ghost row. Skip it.
         if (allEmpty) return null;
-        
+
         // Pass the standardized, pipe-delimited string through a cryptographic hash function
         // to generate a reliable, collision-resistant string ID (e.g., an MD5/SHA hash).
         return CryptoUtils.generateHash(compositeValue);
@@ -473,9 +478,9 @@ class Table extends Sheet {
         return key ? [[String(key).trim().toLowerCase(), index]] : [];
       })
     );
-    
+
     this._isHashed = true;
-    
+
     myLog("trace", "Table %s: Hashed %d keys from RAM window.", this.longName, this._hashKeyMap.size);
   }
 
@@ -487,7 +492,7 @@ class Table extends Sheet {
    */
   deduplicate() {
     this.withoutValidation();
-    
+
     const labelRowRaw = this.getProperty("LabelRow");
     const labelRow = (labelRowRaw === null || labelRowRaw === undefined || labelRowRaw === "") ? 1 : Number(labelRowRaw);
     const startRow = labelRow + 1;
@@ -496,7 +501,7 @@ class Table extends Sheet {
     this.clearCache();
     this.fetch(startRow);
     const window = this.getWindow();
-    
+
     if (window.length === 0) {
       myLog("info", "Deduplicate %s: Sheet is already empty.", this.longName);
       return { beforeCount: 0, afterCount: 0, duplicatesRemoved: 0 };
@@ -534,14 +539,14 @@ class Table extends Sheet {
     if (duplicatesRemoved > 0) {
       // 3. Clear data area and write deduplicated rows back to the sheet
       myLog("info", "Deduplicate %s: Removing %d duplicates...", this.longName, duplicatesRemoved);
-      
+
       const lastRow = this.getLastRowIndex();
       if (lastRow >= startRow) {
         this.sheet.getRange(startRow, 1, lastRow - startRow + 1, this.getLastColumnIndex()).clearContent();
       }
       this._cachedLastRowIndex = startRow - 1;
       this._maxWrittenRow = 0;
-      
+
       this.writeChunks(startRow, deduplicatedRows);
       this.clearCache();
       myLog("info", "Deduplicate %s COMPLETE. Kept %d / %d rows.", this.longName, afterCount, beforeCount);
@@ -580,29 +585,29 @@ class Table extends Sheet {
   lookupValue(keyCol, valCol, searchVal) {
     // 1. Initialize the master cache Map if this is the first lookup on this Table
     if (!this._lookupCacheMap) this._lookupCacheMap = new Map();
-    
+
     // Create a unique cache string for this specific column combination (e.g. "LongName_KeyPrefix")
     const cacheKey = `${keyCol}_${valCol}`;
-    
+
     // 2. Cache Miss: We have never performed a lookup for this column pair yet
     if (!this._lookupCacheMap.has(cacheKey)) {
       const keyOffset = this.getColOffset(keyCol);
       const valOffset = this.getColOffset(valCol);
-      
+
       // Fail safely if the columns don't physically exist in the sheet
       if (keyOffset === -1 || valOffset === -1) return "";
 
       const lookupMap = new Map();
       this._lookupCacheMap.set(cacheKey, lookupMap);
-      
+
       if (this.longName === "Reconciliation_Groups") {
         this._lookupLastRowFetched = this.getLastRowIndex();
-        myLog("info", "Registry: Initialized backward chunk lookup cache for %s (%s->%s), bottom row is %d", 
+        myLog("info", "Registry: Initialized backward chunk lookup cache for %s (%s->%s), bottom row is %d",
           this.longName, keyCol, valCol, this._lookupLastRowFetched);
       } else {
         // Force the RAM window to load in full for other smaller config tables
         this.fetch(this.firstDataRowIndex);
-        
+
         this._window.forEach(row => {
           const k = row[keyOffset];
           if (k !== undefined && k !== "") {
@@ -612,74 +617,74 @@ class Table extends Sheet {
         myLog("trace", "Built lookup cache for %s (%s->%s)", this.longName, keyCol, valCol);
       }
     }
-    
+
     const lookupMap = this._lookupCacheMap.get(cacheKey);
     const searchKeyLower = String(searchVal).toLowerCase();
 
-    // 3. Backward Chunk Scan Fallback: If searching Reconciliation_Groups and not yet in cache, fetch next chunk of 500 rows
+    // 3. Backward Chunk Scan Fallback: If searching Reconciliation_Groups and not yet in cache, fetch next chunk of CONFIG_CONSTANTS.SHEET_CHUNK_SIZE rows
     if (this.longName === "Reconciliation_Groups" && !lookupMap.has(searchKeyLower) && this._lookupLastRowFetched && this._lookupLastRowFetched >= this.firstDataRowIndex) {
       const keyOffset = this.getColOffset(keyCol);
       const valOffset = this.getColOffset(valCol);
-      const chunkSize = 500;
-      
+      const chunkSize = CONFIG_CONSTANTS.SHEET_CHUNK_SIZE;
+
       while (!lookupMap.has(searchKeyLower) && this._lookupLastRowFetched >= this.firstDataRowIndex) {
         const startRow = Math.max(this.firstDataRowIndex, this._lookupLastRowFetched - chunkSize + 1);
         const numRows = this._lookupLastRowFetched - startRow + 1;
-        
+
         myLog("info", "Groups Lookup: Scanning backward chunk from row %d to %d for Group '%s'...", startRow, this._lookupLastRowFetched, searchVal);
-        
+
         this.fetch(startRow, numRows);
-        
+
         this._window.forEach(row => {
           const k = row[keyOffset];
           if (k !== undefined && k !== "") {
             lookupMap.set(String(k).toLowerCase(), row[valOffset]);
           }
         });
-        
+
         this._lookupLastRowFetched = startRow - 1;
       }
     }
-    
+
     // 4. Cache Hit: Instantly retrieve the value in O(1) time
     return lookupMap.get(searchKeyLower) || "";
   }
-  
+
   /**
    * Calculates required Named Ranges and delegates creation to the Physical layer.
    */
-  writeNamedRanges() {
+    writeNamedRanges() {
     if (!this.sheet) {
-      myLog("warn", "Cannot write named ranges for Virtual Sheet: %s", this.longName);
+      myLog("warn", `Cannot write named ranges for Virtual Sheet: ${this.longName}`);
       return;
     }
-    
-    const startRow = (Number(this.getProperty("LabelRow")) || 1) + 1;
+
+    const labelRowRaw = this.getProperty("LabelRow");
+    const labelRow = (labelRowRaw == null || labelRowRaw === "") ? 1 : Number(labelRowRaw);
+    const startRow = labelRow + 1;
     const endRow = this.sheet.getMaxRows();
     const lastCol = this.getLastColumnIndex();
-    
+
     if (endRow < startRow || lastCol === 0) return;
-    
+
     const numRows = endRow - startRow + 1;
     const safeSheetName = Utils.cleanNameForRange(this.sheetName);
-    
+
     // 1. SheetNameSheet (Row 1 to end)
-    this.writeNamedRange(safeSheetName + "Sheet", 1, 1, endRow, lastCol);
-    
+    this.writeNamedRange(`${safeSheetName}Sheet`, 1, 1, endRow, lastCol);
+
     // 2. SheetNameData (Row LabelRow+1 to end)
-    this.writeNamedRange(safeSheetName + "Data", startRow, 1, numRows, lastCol);
-    
+    this.writeNamedRange(`${safeSheetName}Data`, startRow, 1, numRows, lastCol);
+
     // 3. SheetNameColumnName (Per column)
     this.getLabels().forEach(label => {
-      if (!label) return;
       const colOff = this.getColOffset(label);
       if (colOff !== -1) {
-        const rangeName = safeSheetName + Utils.cleanNameForRange(label);
-        this.writeNamedRange(rangeName, startRow, colOff + 1, numRows, 1);
+        this.writeNamedRange(safeSheetName + Utils.cleanNameForRange(label), startRow, colOff + 1, numRows, 1);
       }
     });
-    
-    myLog("info", "Successfully wrote Named Ranges for %s", this.longName);
+
+    myLog("info", `Successfully wrote Named Ranges for ${this.longName}`);
   }
 
 
@@ -692,7 +697,7 @@ class Table extends Sheet {
    */
   calculateFirstRowByDate(targetDate, dateLabel = "Date") {
     if (!this.sheet) return this.firstDataRowIndex;
-    
+
     const dateCol = this.getColOffset(dateLabel);
 
     if (dateCol === -1) {
@@ -702,22 +707,22 @@ class Table extends Sheet {
 
     // Fetch only the date column for efficiency
     const lastRow = this.getLastRowIndex();
-    
+
     let labelRow = Number(this.getProperty("LabelRow"));
     if (isNaN(labelRow) || labelRow === undefined || labelRow === null) {
       labelRow = 1;
     }
     const searchStartRow = labelRow + 1; // Always scan from the top of the data
-    
+
     if (lastRow < searchStartRow) return searchStartRow;
 
     const dateValues = this.sheet.getRange(searchStartRow, dateCol + 1, lastRow - searchStartRow + 1, 1).getValues();
     const targetTime = targetDate.getTime();
-    
+
     for (let i = 0; i < dateValues.length; i++) {
       const cellValue = dateValues[i][0];
       const cellDate = cellValue instanceof Date ? cellValue : new Date(cellValue);
-      
+
       if (!isNaN(cellDate.getTime())) {
         if (cellDate.getTime() >= targetTime) {
           return i + searchStartRow;
@@ -748,10 +753,10 @@ class Table extends Sheet {
     const keyFieldName = this.getProperty("Key") || "PK";
     const dateFieldName = this.getDateFieldName();
     const keyPrefix = this.getProperty("KeyPrefix") || "";
-    
+
     const keyOffset = this.getColOffset(keyFieldName);
     const dateOffset = this.getColOffset(dateFieldName);
-    
+
     if (keyOffset === -1) {
       throw new Error(`[Table Error: ${this.longName}] Column '${keyFieldName}' not found.`);
     }
@@ -765,7 +770,7 @@ class Table extends Sheet {
       const dateVal = row[dateOffset];
       const hasDate = dateVal !== "" && dateVal !== null && dateVal !== undefined;
       const hasNoKey = keyVal === "" || keyVal === null || keyVal === undefined;
-      
+
       if (hasNoKey && hasDate) {
         const newKey = this.makeKey(dateVal, keyPrefix);
         const physicalRow = this.firstDataRowIndex + rowOffset;

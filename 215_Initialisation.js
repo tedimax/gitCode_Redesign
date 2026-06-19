@@ -397,21 +397,7 @@ function initialize() {
   myLog("info", "Bootstrapping gitCode_Redesign system (" + (CONFIG_CONSTANTS.VERSION || "unknown") + ")...");
 
   // Stage 1: Anchor Spreadsheet
-  let anchorSS = null;
-  try {
-    const activeSS = SpreadsheetApp.getActiveSpreadsheet();
-    if (activeSS && activeSS.getSheetByName(CONFIG_CONSTANTS.SHEETS_CONFIG_NAME)) {
-      anchorSS = activeSS;
-      globals.defaultSSID = activeSS.getId();
-      myLog("info", "Registry: Using Active Spreadsheet as Anchor: %s (ID: %s)", activeSS.getName(), globals.defaultSSID);
-    }
-  } catch (e) {
-    // Suppress if running in headless/non-container execution context
-  }
-  
-  if (!anchorSS) {
-    anchorSS = SpreadsheetApp.openById(globals.defaultSSID);
-  }
+  let anchorSS = SpreadsheetApp.openById(globals.defaultSSID);
   globals.spreadsheetInstances[globals.defaultSSID] = anchorSS;
 
   // Stage 2: Sheets Config (The "Map of the World")

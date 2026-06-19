@@ -25,6 +25,7 @@ const CONFIG_CONSTANTS = {
     "Transaction": "Ledgers_GeneratedTransactions",
     "Hundred": "Ledgers_GeneratedTransactions"
   },
+  SHEET_CHUNK_SIZE: 500,
   CORRECTIONS_SHEET_NAME: "NewAccounts_Corrections",
   CORRECTIONS_CONFIG_PK: "GlobalID",
   DEFAULT_FIRST_ROW: 2,

@@ -10,33 +10,36 @@ class Sheet {
     // Semi-private fields for data isolation
     this._window = [];
 
+    this.longName = longName
+
     // 1. Resolve Hybrid Config (Registry + Overrides)
     let registryProperties = {};
     if (typeof Registry !== 'undefined') {
       try {
-        registryProperties = Registry.getSheetConfig(longName);
+        registryProperties = Registry.getSheetConfig(this.longName);
       } catch (e) {
         // Only throw if NO config was passed and it's not the bootstrap table
-        if (!properties && longName !== CONFIG_CONSTANTS.SHEETS_CONFIG_NAME) {
+        if (!properties && this.longName !== CONFIG_CONSTANTS.SHEETS_CONFIG_NAME) {
           throw e;
         }
       }
     }
-    const rawProperties = Object.assign({}, registryProperties, properties || {});
 
-    // Standardize: Lowercase and Trim all property keys for O(1) lookup
-    this._properties = {};
-    for (const key in rawProperties) {
-      this._properties[key.toLowerCase().trim()] = rawProperties[key];
-    }
+    this._properties = Object.fromEntries(
+      Object.entries({ ...registryProperties, ...properties })
+        .map(([key, value]) => [key.toLowerCase().trim(), value])
+    );
 
     this.ss = ss;
-    this.longName = longName;
-    const nameParts = longName.split("_");
-    if (nameParts.length !== 2 && !this._properties.SheetName) {
-      throw new Error(`Naming Failure: The longName "${longName}" is invalid. It must follow the "Spreadsheet_Sheet" convention (e.g., "Ledgers_Bank") or have an explicit "SheetName" override in the Registry.`);
+
+
+    // Validate: Fail if the format is wrong AND no override exists
+    const [ssContext, sheetContext] = this.longName.split("_");
+    if (!sheetContext && !this._properties.sheetname) {
+      throw new Error(`Naming Failure: The longName "${this.longName}" is invalid. It must follow the "Spreadsheet_Sheet" convention (e.g., "Ledgers_Bank") or have an explicit "SheetName" override in the Registry.`);
     }
-    const [ssContext, sheetContext] = nameParts;
+
+    // Assign and fetch using fallback chain
     this.sheetName = String(this._properties.sheetname || sheetContext).trim();
     this.sheet = ss.getSheetByName(this.sheetName);
 
@@ -88,15 +91,9 @@ class Sheet {
    */
   get(rowOffset, colOffset) {
     try {
-      const window = this.getWindow();
-      if (rowOffset < 0 || rowOffset >= window.length) {
-        throw new Error(`Row offset ${rowOffset} out of bounds. Window length: ${window.length}`);
-      }
-      const row = window[rowOffset];
-      if (!row || colOffset < 0 || colOffset >= row.length) {
-        throw new Error(`Column offset ${colOffset} out of bounds at row ${rowOffset}. Row width: ${row?.length || 0}`);
-      }
-      return row[colOffset];
+      const value = this.getWindow()[rowOffset]?.[colOffset];
+      if (value === undefined) throw new Error("Index out of bounds");
+      return value;
     } catch (e) {
       throw new Error(`[Physical Layer: ${this.longName}] get(${rowOffset}, ${colOffset}) Failure: ${e.message}`);
     }
@@ -108,13 +105,9 @@ class Sheet {
    */
   set(rowOffset, colOffset, value) {
     try {
-      const window = this.getWindow();
-      if (rowOffset < 0 || rowOffset >= window.length) {
-        throw new Error(`Cannot SET row offset ${rowOffset}. Out of bounds. Window length: ${window.length}`);
-      }
-      const row = window[rowOffset];
+      const row = this.getWindow()[rowOffset];
       if (!row || colOffset < 0 || colOffset >= row.length) {
-        throw new Error(`Cannot SET column offset ${colOffset} at row ${rowOffset}. Out of bounds. Row width: ${row?.length || 0}`);
+        throw new Error("Index out of bounds");
       }
       row[colOffset] = value;
     } catch (e) {
@@ -141,48 +134,30 @@ class Sheet {
    */
   fetch(startRow, numRows) {
     try {
-      // 3. Resolve Requested Range
-      // Returns object: { start: number, numRows: number, lastCol: number }
       const range = this._resolveRequestedRange(startRow, numRows);
       if (range.numRows <= 0) return;
-
-      // 4. Orchestrate Load
-      if (!this._isFetched || this._windowStartRow === null || this._window.length === 0) {
-        // Build the initial window
-        // Returns void (Mutates this._window and this._windowStartRow in-place)
+      // Orchestrate Load: Build or expand the data window
+      const isWindowEmpty = !this._isFetched || this._windowStartRow === null || this._window.length === 0;
+      if (isWindowEmpty)
         this._performInitialFetch(range);
-      } else {
-        // Expand the existing window perimeter
-        // Returns void (Mutates this._window in-place by prepending/appending arrays)
+      else
         this._expandWindow(range);
-      }
-
-      // 5. Cleanup
-      // Returns void (Mutates this._window in-place by popping trailing empty rows)
       this._trimTrailingRows();
       this._isFetched = true;
     } catch (e) {
       throw new Error(`[Physical Layer: ${this.longName}] fetch(${startRow}, ${numRows}) Failure: ${e.message}`);
     }
   }
-
   /**
    * Private Helper: Resolves the requested physical range into a range object.
    */
   _resolveRequestedRange(startRow, numRows) {
-    const resolvedStart = (startRow === undefined || startRow === null) ? this.firstDataRowIndex : startRow;
-
-    // Utilize the built-in lazy cache to prevent redundant API calls!
+    const resolvedStart = startRow ?? this.firstDataRowIndex;
     const physicalLastRow = this.getLastRowIndex();
-
     const lastCol = this.getLastColumnIndex();
-
-    const count = (numRows === undefined || numRows === null) ? Math.max(0, physicalLastRow - resolvedStart + 1) : numRows;
-
-    // myLog("trace", "Sheet [%s] Dimension Audit: startRow=%d, physicalLastRow=%d", 
-    //   this.longName, resolvedStart, physicalLastRow);
-
-    return { start: resolvedStart, numRows: count, lastCol: lastCol };
+    // If numRows is nullish, calculate remaining rows down to physicalLastRow
+    const count = numRows ?? Math.max(0, physicalLastRow - resolvedStart + 1);
+    return { start: resolvedStart, numRows: count, lastCol };
   }
 
   /**
@@ -203,7 +178,7 @@ class Sheet {
       const gapRows = this._windowStartRow - range.start;
       myLog("info", "Sheet %s: Extending window BACKWARDS by %d rows", this.sheetName, gapRows);
       const gapData = this.sheet.getRange(range.start, 1, gapRows, range.lastCol).getValues();
-      this._window = gapData.concat(this._window);
+      this._window = [...gapData, ...this._window];
       this._windowStartRow = range.start;
     }
 
@@ -211,11 +186,10 @@ class Sheet {
     const currentEndRow = this._windowStartRow + this._window.length - 1;
     const reqEndRow = range.start + range.numRows - 1;
     if (reqEndRow > currentEndRow) {
-      const gapStart = currentEndRow + 1;
       const gapRows = reqEndRow - currentEndRow;
       myLog("info", "Sheet %s: Extending window FORWARDS by %d rows", this.sheetName, gapRows);
-      const gapData = this.sheet.getRange(gapStart, 1, gapRows, range.lastCol).getValues();
-      this._window = this._window.concat(gapData);
+      const gapData = this.sheet.getRange(currentEndRow + 1, 1, gapRows, range.lastCol).getValues();
+      this._window = [...this._window, ...gapData];
     }
   }
 
@@ -224,12 +198,11 @@ class Sheet {
    */
   _trimTrailingRows() {
     const lastPopulatedIdx = this._findLastPopulatedIndex(this._window);
-    if (lastPopulatedIdx === -1) {
-      this._window = [];
-    } else if (lastPopulatedIdx < this._window.length - 1) {
-      const trimmedCount = this._window.length - (lastPopulatedIdx + 1);
+    const targetLength = lastPopulatedIdx + 1;
+    if (targetLength < this._window.length) {
+      const trimmedCount = this._window.length - targetLength;
       myLog("trace", "Sheet %s: Trimmed %d empty trailing rows", this.sheetName, trimmedCount);
-      this._window = this._window.slice(0, lastPopulatedIdx + 1);
+      this._window = this._window.slice(0, targetLength);
     }
     this.windowDataLength = this._window.length;
   }
@@ -240,157 +213,151 @@ class Sheet {
    * @returns {number} The 0-based index of the last non-empty row, or -1 if empty.
    */
   _findLastPopulatedIndex(matrix) {
-    if (!matrix || matrix.length === 0) return -1;
-
+    if (!matrix?.length) return -1;
     for (let i = matrix.length - 1; i >= 0; i--) {
-      // Check if row has any non-empty content
-      const hasData = matrix[i].some(cell => cell !== "" && cell !== null && cell !== undefined);
+      const hasData = matrix[i].some(cell => cell !== "" && cell != null);
       if (hasData) return i;
     }
     return -1;
   }
-
   /**
    * Physical Row Resolver (1-indexed)
    * Returns the physical row number of the last non-empty row.
    */
+
   getLastRowIndex() {
-    // Return cached value if available, adjusting for any writes made since fetching
-    if (this._cachedLastRowIndex !== null && this._cachedLastRowIndex !== undefined) {
-      return Math.max(this._cachedLastRowIndex, this._maxWrittenRow || 0);
+    // 1. Return cached value if available, accounting for fresh local writes
+    if (this._cachedLastRowIndex != null) {
+      return Math.max(this._cachedLastRowIndex, this._maxWrittenRow ?? 0);
     }
-
-    // Guard for virtual sheets
-    if (!this.sheet) return this._maxWrittenRow || (this.firstDataRowIndex - 1);
-
+    // 2. Guard for virtual sheets
+    if (!this.sheet) {
+      return this._maxWrittenRow ?? (this.firstDataRowIndex - 1);
+    }
     const lastCol = this.getLastColumnIndex();
     const lastRow = this.sheet.getLastRow();
-
+    // 3. Fallback for completely empty sheets
     if (lastCol === 0 || lastRow < this.firstDataRowIndex) {
       this._cachedLastRowIndex = this.firstDataRowIndex - 1;
       return this._cachedLastRowIndex;
     }
-
-    // Fetch the values up to the API's idea of lastRow
+    // 4. Inspect data to find the *true* last populated row index
     const numRows = (lastRow - this.firstDataRowIndex) + 1;
     const values = this.sheet.getRange(this.firstDataRowIndex, 1, numRows, lastCol).getValues();
-
     const lastIdx = this._findLastPopulatedIndex(values);
-
-    // Convert 0-indexed array offset back to 1-indexed physical row
+    // Convert 0-indexed matrix offset back to 1-indexed physical row
     this._cachedLastRowIndex = (lastIdx === -1) ? this.firstDataRowIndex - 1 : (this.firstDataRowIndex + lastIdx);
-    return Math.max(this._cachedLastRowIndex, this._maxWrittenRow || 0);
+    return Math.max(this._cachedLastRowIndex, this._maxWrittenRow ?? 0);
   }
-
   /**
    * Physical Column Resolver
    * Returns the cached physical column index of the last column.
    */
   getLastColumnIndex() {
-    if (this._cachedLastCol !== undefined) {
-      return this._cachedLastCol;
-    }
+    if (this._cachedLastCol !== undefined) return this._cachedLastCol;
     if (!this.sheet) return 1;
-    this._cachedLastCol = this.sheet.getLastColumn();
-    return this._cachedLastCol;
+    return (this._cachedLastCol = this.sheet.getLastColumn());
   }
-
   /**
    * Fetches the raw header row from the sheet.
    */
-  _fetchHeaderRow(labelRow) {
-    if (!this.sheet || !labelRow || labelRow < 1) return [];
+  _fetchRowValues(rowIndex) {
+    if (!this.sheet || !rowIndex || rowIndex < 1) return [];
     try {
-      const lastCol = this.sheet.getLastColumn();
-      if (lastCol === 0) return []; // Empty sheet
-      const labels = this.sheet.getRange(labelRow, 1, 1, lastCol).getValues()[0];
-      return labels;
+      const lastCol = this.getLastColumnIndex();
+      if (lastCol === 0) return [];
+      return this.sheet.getRange(rowIndex, 1, 1, lastCol).getValues()[0];
     } catch (e) {
-      throw new Error(`[Physical Layer: ${this.longName}] Failed to fetch labels for sheet ${this.sheetName}. It may not exist. Details: ${e.message}`);
+      throw new Error(`[Physical Layer: ${this.longName}] Failed to fetch labels for sheet ${this.sheetName}. Details: ${e.message}`);
     }
   }
 
   clearDataArea() {
     const lastRow = this.getLastRowIndex();
-    const wipeStartRow = this.absoluteFirstRow || this.firstDataRowIndex;
-    if (lastRow >= wipeStartRow) {
-      this.sheet.getRange(wipeStartRow, 1, lastRow - wipeStartRow + 1, this.getLastColumnIndex()).clearContent();
+    const wipeStartRow = this.absoluteFirstRow ?? this.firstDataRowIndex;
+    // Guard: If there is no data area to clear, reset cache and exit early
+    if (lastRow < wipeStartRow) {
+      this._cachedLastRowIndex = wipeStartRow - 1;
+      this._maxWrittenRow = 0;
+      return;
     }
+    const numRows = lastRow - wipeStartRow + 1;
+    this.sheet.getRange(wipeStartRow, 1, numRows, this.getLastColumnIndex()).clearContent();
     this._cachedLastRowIndex = wipeStartRow - 1;
     this._maxWrittenRow = 0;
   }
 
   /**
-   * Safely writes a physical Named Range to the spreadsheet.
-   * Keeps API calls isolated to the Physical Layer.
-   * @param {string} rangeName Cleaned, Google-compliant range name.
-   * @param {number} startRow 1-indexed row start.
-   * @param {number} startCol 1-indexed column start.
-   * @param {number} numRows Number of rows to include.
-   * @param {number} numCols Number of columns to include.
-   */
+  * Safely writes a physical Named Range to the spreadsheet.
+  * Keeps API calls isolated to the Physical Layer.
+  * @param {string} rangeName Cleaned, Google-compliant range name.
+  * @param {number} startRow 1-indexed row start.
+  * @param {number} startCol 1-indexed column start.
+  * @param {number} numRows Number of rows to include.
+  * @param {number} numCols Number of columns to include.
+  */
   writeNamedRange(rangeName, startRow, startCol, numRows, numCols) {
     if (!this.sheet) return;
+
     try {
-      this.ss.setNamedRange(rangeName, this.sheet.getRange(startRow, startCol, numRows, numCols));
+      const range = this.sheet.getRange(startRow, startCol, numRows, numCols);
+      this.ss.setNamedRange(rangeName, range);
     } catch (e) {
       myLog("warn", "Failed to set named range %s: %s", rangeName, e.message);
     }
   }
 
   writeBlock(startRow, matrix) {
-    if (!matrix || matrix.length === 0 || !matrix[0] || matrix[0].length === 0) return;
-    myLog("info", "Writing " + matrix.length + " rows to " + this.sheetName + " starting at row " + startRow);
-
-    // Auto-expand sheet rows if needed to prevent coordinates out of bounds error
+    if (!matrix?.length || !matrix[0]?.length) return;
+    const numRows = matrix.length;
+    const numCols = matrix[0].length;
+    myLog("info", `Writing ${numRows} rows to ${this.sheetName} starting at row ${startRow}`);
+    // 1. Auto-expand rows if needed to prevent out-of-bounds errors
     const maxRows = this.sheet.getMaxRows();
-    const neededRows = startRow + matrix.length - 1;
+    const neededRows = startRow + numRows - 1;
     if (neededRows > maxRows) {
-      this.sheet.insertRowsAfter(maxRows, neededRows - maxRows);
-      myLog("info", "Sheet %s: Expanded physical rows by %d (maxRows is now %d)", this.sheetName, neededRows - maxRows, neededRows);
+      const rowsToAdd = neededRows - maxRows;
+      this.sheet.insertRowsAfter(maxRows, rowsToAdd);
+      myLog("info", "Sheet %s: Expanded physical rows by %d (maxRows is now %d)", this.sheetName, rowsToAdd, neededRows);
     }
-
-    // Auto-expand sheet columns if needed
+    // 2. Auto-expand columns if needed
     const maxCols = this.sheet.getMaxColumns();
-    const neededCols = matrix[0].length;
-    if (neededCols > maxCols) {
-      this.sheet.insertColumnsAfter(maxCols, neededCols - maxCols);
-      myLog("info", "Sheet %s: Expanded physical columns by %d (maxColumns is now %d)", this.sheetName, neededCols - maxCols, neededCols);
+    if (numCols > maxCols) {
+      const colsToAdd = numCols - maxCols;
+      this.sheet.insertColumnsAfter(maxCols, colsToAdd);
+      myLog("info", "Sheet %s: Expanded physical columns by %d (maxColumns is now %d)", this.sheetName, colsToAdd, numCols);
     }
-
-    const range = this.sheet.getRange(startRow, 1, matrix.length, matrix[0].length);
-    range.setValues(matrix);
-
-    // Update internal tracker if this exceeds it
-    const endRow = startRow + matrix.length - 1;
-    if (!this._maxWrittenRow || endRow > this._maxWrittenRow) {
-      this._maxWrittenRow = endRow;
-    }
+    // 3. Commit data to the sheet
+    this.sheet.getRange(startRow, 1, numRows, numCols).setValues(matrix);
+    // 4. Update the internal tracker
+    this._maxWrittenRow = Math.max(this._maxWrittenRow ?? 0, neededRows);
   }
 
   /**
    * Helper to write data in chunks to prevent timeouts.
    * Can be used for partial updates or large matrices.
    */
-  writeChunks(startRow, dataMatrix, chunkSize = 500) {
-    for (let chunkOff = 0; chunkOff < dataMatrix.length; chunkOff += chunkSize) {
-      const chunk = dataMatrix.slice(chunkOff, chunkOff + chunkSize);
-      this.writeBlock(startRow + chunkOff, chunk);
+  writeChunks(startRow, dataMatrix, chunkSize = CONFIG_CONSTANTS.SHEET_CHUNK_SIZE) {
+    for (let offset = 0; offset < dataMatrix.length; offset += chunkSize) {
+      const chunk = dataMatrix.slice(offset, offset + chunkSize);
+      const targetRow = startRow + offset
+      this.writeBlock(targetRow, chunk);
     }
   }
 
   /**
-   * Physically deletes a row and decrements last row trackers to prevent coordinates errors
-   * and avoid a full sheet cache reload.
-   * @param {number} physicalRow 1-indexed physical row number.
-   */
+ * Physically deletes a row and decrements last row trackers to prevent coordinates errors
+ * and avoid a full sheet cache reload.
+ * @param {number} physicalRow 1-indexed physical row number.
+ */
   deleteRow(physicalRow) {
     if (!this.sheet) return;
     this.sheet.deleteRow(physicalRow);
-
-    if (this._cachedLastRowIndex !== null && this._cachedLastRowIndex !== undefined) {
+    // 1. Decrement the cached index if it exists
+    if (this._cachedLastRowIndex != null) {
       this._cachedLastRowIndex--;
     }
+    // 2. Safely decrement the max written row tracker
     if (this._maxWrittenRow) {
       this._maxWrittenRow = Math.max(0, this._maxWrittenRow - 1);
     }
@@ -409,35 +376,6 @@ class Sheet {
     this._windowStartRow = null;
     this.windowDataLength = 0;
     myLog("trace", "Flushed _window memory for %s", this.longName);
-  }
-
-  /**
-   * Named Range Generation
-
-   * Uses StringUtils.toRangeName for strict sanitation.
-   */
-  writeNamedRanges() {
-    const labels = this.sheet.getRange(this._properties.labelrow || 1, 1, 1, this.getLastColumnIndex()).getValues()[0];
-    const sheetNameClean = StringUtils.toRangeName(this.sheetName);
-
-    const physicalDataLength = Math.max(1, this.getLastRowIndex() - this.firstDataRowIndex + 1);
-
-    // 1. Data Area Range (e.g. SS_NominalsData)
-    const dataRange = this.sheet.getRange(this.firstDataRowIndex, 1, physicalDataLength, labels.length);
-    this.ss.setNamedRange(sheetNameClean + "Data", dataRange);
-
-    // 2. Full Sheet Range (e.g. SS_NominalsSheet) - Including headers
-    const fullSheetRange = this.sheet.getRange(1, 1, this.getLastRowIndex(), labels.length);
-    this.ss.setNamedRange(sheetNameClean + "Sheet", fullSheetRange);
-
-    // 3. Individual Column-Data ranges (e.g. SS_Nominals_Date)
-    labels.forEach((label, index) => {
-      if (label) {
-        const colName = sheetNameClean + StringUtils.toRangeName(label);
-        const colRange = this.sheet.getRange(this.firstDataRowIndex, index + 1, physicalDataLength, 1);
-        this.ss.setNamedRange(colName, colRange);
-      }
-    });
   }
 
 }
