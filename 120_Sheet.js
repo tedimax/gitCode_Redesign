@@ -62,6 +62,9 @@ class Sheet {
     this._maxWrittenRow = 0;
   }
 
+  getProperty(propName) {
+    return this._properties[String(propName || "").toLowerCase().trim()];;
+  }
   /**
    * Lazy accessor for the data matrix.
    * Ensures data is loaded exactly once on demand.

@@ -87,25 +87,6 @@ class Table extends Sheet {
    * Safe access to table constants from the Sheets config.
    * Uses standardized O(1) lookup.
    */
-  getProperty(propName) {
-    const key = String(propName || "").toLowerCase().trim();
-    const val = this._properties[key];
-
-    if (val !== undefined && val !== null && val !== "") return val;
-
-    // Fallback to Registry global lookup (RECURSION GUARD)
-    // The Registry's own configuration table cannot look itself up via the Registry.
-    if (this.longName !== CONFIG_CONSTANTS.SHEETS_CONFIG_NAME && typeof Registry !== 'undefined') {
-      return Registry.lookupValue(this.longName, propName);
-    }
-    return null;
-  }
-
-  _ensureHeaderMap() {
-    if (!this._labels) {
-      this.initializeHeaderMap();
-    }
-  }
 
   /**
    * Lazy accessor for the list of column labels.
@@ -212,7 +193,6 @@ class Table extends Sheet {
    * Functional Pattern: .reduce() over columnMap.
    */
   getRowObjectByOffset(rowOffset) {
-    this._ensureHeaderMap();
     try {
       if (rowOffset < 0 || rowOffset >= this.windowDataLength) {
         throw new Error(`Invalid row offset ${rowOffset} for object conversion. Window length: ${this.windowDataLength}`);
