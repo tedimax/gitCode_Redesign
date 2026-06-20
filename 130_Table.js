@@ -19,6 +19,7 @@ class Table extends Sheet {
     this._validStartRow = null; // Physical row index of the first validated row
     this._validEndRow = null;   // Physical row index of the last validated row
     this._skipValidation = false; // Internal flag for fast lookups
+    this.initializeHeaderMap();
   }
 
   /**
@@ -53,12 +54,12 @@ class Table extends Sheet {
    * Stores both the ordered array and the lookup map for O(1) retrieval.
    */
   initializeHeaderMap() {
-    const labelRowRaw = this.getProperty("LabelRow");
+    const labelRowRawIndex = this.getProperty("LabelRow");
     // Coerce to a number to ensure type-safe comparison (e.g. string "0" vs number 0)
-    const labelRow = (labelRowRaw === null || labelRowRaw === undefined || labelRowRaw === "") ? 1 : Number(labelRowRaw);
+    const labelRowIndex = (labelRowRawIndex === null || labelRowRawIndex === undefined || labelRowRawIndex === "") ? 0 : Number(labelRowRawIndex);
 
     // 1. Capture and trim labels in their physical order (Skip if LabelRow is 0)
-    const rawLabels = (labelRow === 0) ? [] : this._fetchRowValues(labelRow);
+    const rawLabels = (labelRowIndex === 0) ? [] : this._fetchRowValues(labelRowIndex);
     this._labels = rawLabels.map(label => String(label || "").trim());
 
     // 2. Build the lookup map functionally (Label -> Offset)
@@ -68,11 +69,28 @@ class Table extends Sheet {
         .filter(([label]) => label !== "")
     );
 
+    this.column = Object.fromEntries(
+      this._labels
+        .filter(label => label !== "")
+        .map((label, offset) => {
+          const symbolicName = label
+            .trim()
+            // 1. Fix continuous uppercase: "TableTOP" -> "TableTop"
+            .replace(/([A-Z]+)([A-Z][a-z])/g, (m, g1, g2) => g1.toLowerCase() + g2)
+            // 2. Normalize separators and camelCase the rest
+            .replace(/[^a-zA-Z0-9]+(.)/g, (m, chr) => chr.toUpperCase())
+            // 3. Ensure the very first character of the final string is lowercase
+            .replace(/^([A-Z])/, (m, chr) => chr.toLowerCase());
+
+          return [symbolicName, offset];
+        })
+    );
+
     // 3. Fail Fast: If no physical labels found but LabelRow is not 0, throw an error!
-    if (this._columnMap.size === 0 && labelRow !== 0) {
-      throw new Error(`[Schema Error: ${this.longName}] Physical sheet has no headers at row ${labelRow}. ` +
+    if (this._columnMap.size === 0 && labelRowIndex !== 0) {
+      throw new Error(`[Schema Error: ${this.longName}] Physical sheet has no headers at row ${labelRowIndex}. ` +
         `The columnMap MUST be derived from physical headers. Please add headers to the sheet or set LabelRow to 0 in the Registry.`);
-    } else if (labelRow === 0) {
+    } else if (labelRowIndex === 0) {
       myLog("trace", "Table %s: Confirmed as Raw/Output sheet (LabelRow=0).", this.longName);
     }
 
@@ -92,7 +110,6 @@ class Table extends Sheet {
    * Lazy accessor for the list of column labels.
    */
   getLabels() {
-    if (!this._labels) this.initializeHeaderMap();
     return this._labels || [];
   }
 
@@ -109,8 +126,6 @@ class Table extends Sheet {
    */
   getColOffset(name) {
     if (!name) return -1;
-    if (!this._labels) this.initializeHeaderMap();
-
     // 1. Try exact match (Fastest, zero overhead)
     let off = this._columnMap.get(name);
     if (off !== undefined) return off;
@@ -633,7 +648,7 @@ class Table extends Sheet {
   /**
    * Calculates required Named Ranges and delegates creation to the Physical layer.
    */
-    writeNamedRanges() {
+  writeNamedRanges() {
     if (!this.sheet) {
       myLog("warn", `Cannot write named ranges for Virtual Sheet: ${this.longName}`);
       return;

@@ -15,21 +15,21 @@ function makeKeys() {
   const activeSheet = SpreadsheetApp.getActiveSheet();
   const sheetName = activeSheet.getName();
   const activeSsid = activeSheet.getParent().getId();
-  
+
   myLog("info", "Generating keys for active sheet: %s", sheetName);
-  
+
   try {
     const config = Registry.getSheetConfigBySheetName(sheetName, activeSsid);
     if (!config) {
       throw new Error(`Sheet '${sheetName}' not found in the Registry.`);
     }
-    
+
     const longName = config.LongName;
     const isManualOrLedger = longName.startsWith("ManualEntry_") || longName.startsWith("Ledgers_");
     if (!isManualOrLedger) {
-       throw new Error(`Sheet '${sheetName}' is not a manual entry or ledger sheet. Key generation is restricted to these types.`);
+      throw new Error(`Sheet '${sheetName}' is not a manual entry or ledger sheet. Key generation is restricted to these types.`);
     }
-    
+
     const table = Utils.getSheetInstance(longName);
     if (table && typeof table.makeKeys === 'function') {
       table.makeKeys();
@@ -54,15 +54,15 @@ function deduplicateActiveSheet() {
   const activeSheet = SpreadsheetApp.getActiveSheet();
   const sheetName = activeSheet.getName();
   const activeSsid = activeSheet.getParent().getId();
-  
+
   myLog("info", "Deduplicating active sheet: %s", sheetName);
-  
+
   try {
     const config = Registry.getSheetConfigBySheetName(sheetName, activeSsid);
     if (!config) {
       throw new Error(`Sheet '${sheetName}' not found in the Registry.`);
     }
-    
+
     const longName = config.LongName;
     const table = Utils.getSheetInstance(longName);
     if (table && typeof table.deduplicate === 'function') {
@@ -105,15 +105,15 @@ function runActiveAnnualSheet() {
   initialize();
   const activeSheet = SpreadsheetApp.getActiveSheet();
   const sheetName = activeSheet.getName();
-  
+
   const yearMatch = sheetName.match(/^\d{4}$/);
   if (!yearMatch) {
     throw new Error(`Active context error: The sheet "${sheetName}" is not a valid annual report sheet.`);
   }
-  
+
   const year = Number(yearMatch[0]);
   myLog("info", "Entry Point: running active annual sheet for year %d", year);
-  _runAnnualReportForYear(year); 
+  _runAnnualReportForYear(year);
 }
 
 /**
@@ -124,15 +124,15 @@ function importActiveSheet() {
   const activeSheet = SpreadsheetApp.getActiveSheet();
   const sheetName = activeSheet.getName();
   const activeSsid = activeSheet.getParent().getId();
-  
+
   myLog("info", "Importing data for active sheet: %s", sheetName);
-  
+
   try {
     const config = Registry.getSheetConfigBySheetName(sheetName, activeSsid);
     if (!config) {
       throw new Error(`Sheet '${sheetName}' not found in the Registry.`);
     }
-    
+
     const table = Utils.getSheetInstance(config.LongName);
     if (table && typeof table.execute === 'function') {
       const stats = table.execute();
@@ -153,15 +153,15 @@ function defineActiveSheetNamedRanges() {
   const activeSheet = SpreadsheetApp.getActiveSheet();
   const sheetName = activeSheet.getName();
   const activeSsid = activeSheet.getParent().getId();
-  
+
   myLog("info", "Defining Named Ranges for active sheet: %s", sheetName);
-  
+
   try {
     const config = Registry.getSheetConfigBySheetName(sheetName, activeSsid);
     if (!config) {
       throw new Error(`Sheet '${sheetName}' not found in the Registry.`);
     }
-    
+
     const table = Utils.getSheetInstance(config.LongName);
     if (table) {
       table.writeNamedRanges();
@@ -182,14 +182,14 @@ function runAllAnnualReports() {
   const currentYear = now.getFullYear();
   // FY is labelled by its END year (e.g. Apr 2026 - Mar 2027 = FY2027)
   const endYear = (now.getMonth() >= 3) ? currentYear + 1 : currentYear;
-  
+
   myLog("info", "Entry Point: Starting batch run for all years (%d to %d)", startYear, endYear);
-  
+
   for (let year = startYear; year <= endYear; year++) {
     const isFirst = (year === startYear);
     _runAnnualReportForYear(year, 2, isFirst); // Force SourceFirstRow to 2, and FullLoad on the first pass
   }
-  
+
   myLog("info", "Entry Point: Batch run complete.");
 }
 
@@ -221,19 +221,11 @@ function importPendingSheets() {
   Registry.refresh();
   myLog("info", "Batch: Starting import of pending sheets...");
 
-  const sheetsTable = globals.sheetsObj;
-  const cols = sheetsTable.getSymbolicOffsets();
-  
-  if (cols.process === -1) {
+
+  if (globals.sheetsObj.column.process === -1) {
     throw new Error("Registry Error: The 'Process' column is missing from the Sheets configuration.");
   }
 
-  const longNameCol = sheetsTable.getColOffset("LongName");
-  if (longNameCol === -1) {
-    throw new Error("Registry Error: The 'LongName' column is missing from the Sheets configuration.");
-  }
-
-  const processOrderCol = sheetsTable.getColOffset("ProcessOrder");
   let count = 0;
   const batchResults = [];
 
@@ -260,8 +252,8 @@ function importPendingSheets() {
   };
 
   const pendingSheets = [];
-  sheetsTable.getWindow().forEach(row => {
-    const longName = row[longNameCol];
+  globals.sheetsObj.getWindow().forEach(row => {
+    const longName = row[globals.sheetsObj.column.longName];
     if (!longName) return;
 
     const config = Registry.getSheetConfig(longName);
@@ -271,8 +263,8 @@ function importPendingSheets() {
     if (!isPending) return;
 
     let orderVal = 9999;
-    if (processOrderCol !== -1) {
-      const cellVal = row[processOrderCol];
+    if (globals.sheetsObj.column.processOrder !== -1) {
+      const cellVal = row[globals.sheetsObj.column.processOrder];
       if (cellVal !== undefined && cellVal !== null && cellVal !== "") {
         const parsed = parseInt(cellVal, 10);
         if (!isNaN(parsed)) {
@@ -294,7 +286,7 @@ function importPendingSheets() {
   // 2. Apply topological sort to guarantee source sheets run before target sheets
   const pendingNames = pendingSheets.map(item => item.longName);
   const sortedNames = _sortSheetsByDependency(pendingNames);
-  
+
   const itemMap = new Map(pendingSheets.map(item => [item.longName, item]));
   const sortedPendingSheets = sortedNames.map(name => itemMap.get(name)).filter(Boolean);
 
@@ -306,11 +298,11 @@ function importPendingSheets() {
         const table = Utils.getSheetInstance(longName);
         if (table && typeof table.execute === "function") {
           const stats = table.execute();
-          
-          const regRowOff = sheetsTable.getRowOffset(longName);
-          const physicalRow = regRowOff + sheetsTable.firstDataRowIndex;
-          sheetsTable.sheet.getRange(physicalRow, cols.process + 1).setValue(false);
-          
+
+          const regRowOff = globals.sheetsObj.getRowOffset(longName);
+          const physicalRow = regRowOff + globals.sheetsObj.firstDataRowIndex;
+          globals.sheetsObj.sheet.getRange(physicalRow, globals.sheetsObj.column.process + 1).setValue(false);
+
           count++;
           batchResults.push({ longName, success: true, stats });
         }
@@ -319,7 +311,7 @@ function importPendingSheets() {
         logCumulativeSummary();
         myLog("error", "Batch Failure: Failed to import %s. Error: %s", longName, e.message);
         SpreadsheetApp.getUi().alert(`Batch Interrupted: ${longName} failed. \n\nError: ${e.message}`);
-        throw e; 
+        throw e;
       }
     });
 
@@ -337,16 +329,15 @@ function importPendingSheets() {
 function resetPendingSheets() {
   initialize();
   myLog("info", "Registry: Resetting all pending flags to FALSE.");
-  const sheetsTable = globals.sheetsObj;
-  const cols = sheetsTable.getSymbolicOffsets();
-  if (cols.process === -1) return;
 
-  const rowCount = sheetsTable.sheet.getLastRow() - sheetsTable.firstDataRowIndex + 1;
+  if (globals.sheetsObj.column.process === -1) return;
+
+  const rowCount = globals.sheetsObj.sheet.getLastRow() - globals.sheetsObj.firstDataRowIndex + 1;
   if (rowCount <= 0) return;
 
   const data = Array(rowCount).fill([false]);
-  sheetsTable.sheet.getRange(sheetsTable.firstDataRowIndex, cols.process + 1, rowCount, 1).setValues(data);
-  
+  globals.sheetsObj.sheet.getRange(globals.sheetsObj.firstDataRowIndex, globals.sheetsObj.column.process + 1, rowCount, 1).setValues(data);
+
   SpreadsheetApp.getUi().alert("Success: All sheets marked as CLEAN (no pending imports).");
 }
 
@@ -357,28 +348,23 @@ function resetPendingSheets() {
 function markAllDirty() {
   initialize();
   myLog("info", "Registry: Marking runnable sheets as DIRTY.");
-  const sheetsTable = globals.sheetsObj;
-  const cols = sheetsTable.getSymbolicOffsets();
-  if (cols.process === -1) return;
 
-  const longNameCol = sheetsTable.getColOffset("LongName");
-  const typeCol = sheetsTable.getColOffset("SheetType");
-  if (longNameCol === -1) {
+  if (globals.sheetsObj.column.longName === -1) {
     throw new Error("Registry Error: The 'LongName' column is missing from the Sheets configuration.");
   }
 
-  const rows = sheetsTable.getWindow();
+  const rows = globals.sheetsObj.getWindow();
   const rowCount = rows.length;
   if (rowCount <= 0) return;
 
   const data = rows.map(row => {
-    const typeStr = typeCol !== -1 ? String(row[typeCol] || "").trim().toLowerCase() : "";
+    const typeStr = globals.sheetsObj.column.sheetType !== -1 ? String(row[globals.sheetsObj.column.sheetType] || "").trim().toLowerCase() : "";
     const isRunnable = typeStr === "importtable" || typeStr === "generatetable" || typeStr === "filetable";
     return [isRunnable];
   });
 
-  sheetsTable.sheet.getRange(sheetsTable.firstDataRowIndex, cols.process + 1, rowCount, 1).setValues(data);
-  
+  globals.sheetsObj.sheet.getRange(globals.sheetsObj.firstDataRowIndex, globals.sheetsObj.column.process + 1, rowCount, 1).setValues(data);
+
   const dirtyCount = data.filter(d => d[0] === true).length;
   SpreadsheetApp.getUi().alert(`Success: Marked ${dirtyCount} runnable sheets as DIRTY. Use 'Import Pending Sheets' to run.`);
 }
@@ -392,33 +378,30 @@ function markAllDirty() {
 function setAllWindows() {
   const year = _promptForYear();
   if (year === null) return;
-  
+
   initialize();
   Registry.refresh();
-  const sheetsTable = globals.sheetsObj;
-  
-  const longNameCol = sheetsTable.getColOffset("LongName");
-  if (longNameCol === -1) {
+
+  if (globals.sheetsObj.column.longName === -1) {
     throw new Error("Registry Error: The 'LongName' column is missing from the Sheets configuration.");
   }
-  
-  const deltaDateCol = sheetsTable.getColOffset("DeltaDate");
-  if (deltaDateCol === -1) {
+
+  if (globals.sheetsObj.column.deltaDate === -1) {
     throw new Error("Registry Error: The 'DeltaDate' column is missing from the Sheets configuration.");
   }
-  
+
   let calculatedCount = 0;
-  sheetsTable.getWindow().forEach(row => {
-    const longName = row[longNameCol];
+  globals.sheetsObj.getWindow().forEach(row => {
+    const longName = row[globals.sheetsObj.column.longName];
     if (longName) {
-      const isWindowed = TypeUtils.isTrue(row[deltaDateCol]);
+      const isWindowed = TypeUtils.isTrue(row[globals.sheetsObj.column.deltaDate]);
       if (isWindowed) {
         _calculateAndSaveWindow(longName, year);
         calculatedCount++;
       }
     }
   });
-  
+
   const msg = (year === "FULL")
     ? `Finished setting windows for all ${calculatedCount} target, manual entry, and summary sheets to FULL IMPORT.`
     : `Finished setting windows for all ${calculatedCount} target, manual entry, and summary sheets for FY${year}.`;
@@ -444,25 +427,28 @@ function defineAllNamedRanges() {
 function showRepairManager() {
   initialize();
   const template = HtmlService.createTemplateFromFile('RepairManager');
-  
+
   // Inject configuration data eagerly so client-side won't need to query them asynchronously
   template.sheetConfigsJson = JSON.stringify(getCoreSheetConfigs() || []);
   template.dependencyMapJson = JSON.stringify(getSheetDependencyMap() || {});
-  
+
   // Inject the current FY window year
-  let currentFYWindow = "FULL";
+  /** @type {any} */ // This tells the type checker to allow any assignment
+  let currentFYWindow = "FULL"; // First declaration
+
   try {
     currentFYWindow = getCurrentFYWindow();
   } catch (e) {
-    myLog("warn", "Failed to retrieve current FY window: %s", e.message);
+    myLog("warn", `Failed to retrieve current FY window: ${e.message}`);
   }
+
   template.currentFYWindow = currentFYWindow;
-  
+
   const html = template.evaluate()
     .setWidth(450)
     .setHeight(620)
     .setTitle('🛠️ Repair Manager');
-    
+
   SpreadsheetApp.getUi().showModalDialog(html, '🛠️ Repair Manager');
 }
 
@@ -472,22 +458,19 @@ function showRepairManager() {
  */
 function getCurrentFYWindow() {
   initialize();
-  const sheetsTable = globals.sheetsObj;
-  const deltaDateCol = sheetsTable.getColOffset("DeltaDate");
-  const fromFYCol = sheetsTable.getColOffset("FromFY");
 
-  if (deltaDateCol === -1 || fromFYCol === -1) {
+  if (globals.sheetsObj.column.deltaDate === -1 || globals.sheetsObj.column.fromFy === -1) {
     return "FULL";
   }
 
-  sheetsTable.fetchWindow();
-  
+  globals.sheetsObj.fetchWindow();
+
   // Find the first sheet where DeltaDate is TRUE and FromFY has a value
-  for (let idx = 0; idx < sheetsTable.windowDataLength; idx++) {
-    const row = sheetsTable.getWindow()[idx];
-    const isWindowed = TypeUtils.isTrue(row[deltaDateCol]);
+  for (let idx = 0; idx < globals.sheetsObj.windowDataLength; idx++) {
+    const row = globals.sheetsObj.getWindow()[idx];
+    const isWindowed = TypeUtils.isTrue(row[globals.sheetsObj.column.deltaDate]);
     if (isWindowed) {
-      const fromFYRaw = row[fromFYCol];
+      const fromFYRaw = row[globals.sheetsObj.column.fromFy];
       if (fromFYRaw !== undefined && fromFYRaw !== null && fromFYRaw !== "") {
         let fromFY = null;
         if (fromFYRaw instanceof Date) {
@@ -525,15 +508,12 @@ function getCurrentFYWindow() {
 function updateFYWindow(yearVal) {
   initialize();
   Registry.refresh();
-  
-  const sheetsTable = globals.sheetsObj;
-  const longNameCol = sheetsTable.getColOffset("LongName");
-  const deltaDateCol = sheetsTable.getColOffset("DeltaDate");
-  
-  if (longNameCol === -1 || deltaDateCol === -1) {
+
+
+  if (globals.sheetsObj.column.longName === -1 || globals.sheetsObj.column.deltaDate === -1) {
     throw new Error("Registry Error: Required columns (LongName or DeltaDate) missing.");
   }
-  
+
   // Clean up input
   let year;
   if (yearVal === null || yearVal === undefined || String(yearVal).trim() === "" || String(yearVal).trim().toLowerCase() === "null") {
@@ -545,22 +525,22 @@ function updateFYWindow(yearVal) {
     }
     year = parsed;
   }
-  
+
   let calculatedCount = 0;
-  sheetsTable.getWindow().forEach(row => {
-    const longName = row[longNameCol];
+  globals.sheetsObj.getWindow().forEach(row => {
+    const longName = row[globals.sheetsObj.column.longName];
     if (longName) {
-      const isWindowed = TypeUtils.isTrue(row[deltaDateCol]);
+      const isWindowed = TypeUtils.isTrue(row[globals.sheetsObj.column.deltaDate]);
       if (isWindowed) {
         _calculateAndSaveWindow(longName, year);
         calculatedCount++;
       }
     }
   });
-  
+
   // Force refresh Registry config so the rest of the application gets the new settings
   Registry.refresh();
-  
+
   return {
     year: year === "FULL" ? "All Years" : String(year),
     calculatedCount: calculatedCount
@@ -592,7 +572,7 @@ function getSheetDependencyMap() {
 function runRepairSingle(longName) {
   initialize();
   myLog("info", "Repair: Processing single sheet %s...", longName);
-  
+
   // Specialized handling for Reconcile sheet
   if (longName === "Reconciliation_NewReconcile") {
     const recon = _getReconciliationInstance();
@@ -601,14 +581,14 @@ function runRepairSingle(longName) {
     }
     return;
   }
-  
+
   // Repair manager should force update mode EXCEPT for FileTable (Drive staging) and GenerateTable sheets,
   // which must always be replaced.
   const config = Registry.getSheetConfig(longName);
   const isFileTable = (config && config.SheetType === "FileTable") || longName.startsWith("ImportsArchive_File");
   const isGenerateTable = (config && config.SheetType === "GenerateTable") || longName === "Ledgers_GeneratedTransactions";
   const forceUpdate = !isFileTable && !isGenerateTable;
-  
+
   _importNamedSheet(longName, forceUpdate, true); // Suppress Alerts
 }
 
@@ -667,7 +647,7 @@ function DECODE_PIN(encryptedPIN) {
   if (encryptedPIN === null || encryptedPIN === undefined || encryptedPIN === "") {
     return "";
   }
-  
+
   if (Array.isArray(encryptedPIN)) {
     // @ts-ignore
     return encryptedPIN.map(row => {
