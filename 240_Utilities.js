@@ -82,8 +82,8 @@ const Utils = (() => {
             const configData = [...unionSheet._window];
             unionSheet.clearCache();
             
-            const sourceColOffset = unionSheet.getColOffset("Source");
-            if (sourceColOffset !== -1) {
+            const sourceColOffset = unionSheet.column.source;
+            if (sourceColOffset !== undefined) {
               const nestedSources = configData
                 .map(row => String(row[sourceColOffset] || "").trim())
                 .filter(name => name !== "")

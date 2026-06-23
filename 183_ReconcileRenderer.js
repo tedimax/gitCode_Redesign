@@ -86,7 +86,6 @@ class ReconcileRenderer {
    */
   _buildRenderedRows(reconcileRows, groupSizes, rootToTxId, startingTxId) {
     let nextTxId = startingTxId;
-    const reconcileCols = this.table.getSymbolicOffsets();
     const rowLength = this.table.getLabels().length;
 
     return reconcileRows.map(item => {
@@ -103,8 +102,8 @@ class ReconcileRenderer {
       }
 
       const outRow = new Array(rowLength).fill("");
-      if (reconcileCols.pk !== -1) outRow[reconcileCols.pk] = item.PK;
-      if (reconcileCols.transaction !== -1) outRow[reconcileCols.transaction] = currentTxId;
+      if (this.table.column.pk !== undefined) outRow[this.table.column.pk] = item.PK;
+      if (this.table.column.transaction !== undefined) outRow[this.table.column.transaction] = currentTxId;
 
       return outRow;
     });

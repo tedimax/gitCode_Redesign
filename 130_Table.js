@@ -8,7 +8,6 @@
 class Table extends Sheet {
   constructor(ss, longName, properties = null) {
     super(ss, longName, properties);
-    this._columnMap = new Map();
     this._hashKeyMap = new Map();
     this._isHashed = false;
     this._keyMetadata = null;
@@ -53,6 +52,9 @@ class Table extends Sheet {
    * Builds a Map of Label -> Column Offset.
    * Stores both the ordered array and the lookup map for O(1) retrieval.
    */
+
+  // 2. Updated Initialization (where you build this.column)
+
   initializeHeaderMap() {
     const labelRowRawIndex = this.getProperty("LabelRow");
     // Coerce to a number to ensure type-safe comparison (e.g. string "0" vs number 0)
@@ -62,39 +64,42 @@ class Table extends Sheet {
     const rawLabels = (labelRowIndex === 0) ? [] : this._fetchRowValues(labelRowIndex);
     this._labels = rawLabels.map(label => String(label || "").trim());
 
-    // 2. Build the lookup map functionally (Label -> Offset)
-    this._columnMap = new Map(
-      this._labels
-        .map((label, offset) => [label, offset])
-        .filter(([label]) => label !== "")
-    );
-
-    this.column = Object.fromEntries(
-      this._labels
-        .filter(label => label !== "")
-        .map((label, offset) => {
-          const symbolicName = label
-            .trim()
-            // 1. Fix continuous uppercase: "TableTOP" -> "TableTop"
-            .replace(/([A-Z]+)([A-Z][a-z])/g, (m, g1, g2) => g1.toLowerCase() + g2)
-            // 2. Normalize separators and camelCase the rest
-            .replace(/[^a-zA-Z0-9]+(.)/g, (m, chr) => chr.toUpperCase())
-            // 3. Ensure the very first character of the final string is lowercase
-            .replace(/^([A-Z])/, (m, chr) => chr.toLowerCase());
-
-          return [symbolicName, offset];
-        })
-    );
-
-    // 3. Fail Fast: If no physical labels found but LabelRow is not 0, throw an error!
-    if (this._columnMap.size === 0 && labelRowIndex !== 0) {
+    // 2. Fail Fast: If no physical labels found but LabelRow is not 0, throw an error!
+    const validLabelsCount = this._labels.filter(label => label !== "").length;
+    if (validLabelsCount === 0 && labelRowIndex !== 0) {
       throw new Error(`[Schema Error: ${this.longName}] Physical sheet has no headers at row ${labelRowIndex}. ` +
         `The columnMap MUST be derived from physical headers. Please add headers to the sheet or set LabelRow to 0 in the Registry.`);
     } else if (labelRowIndex === 0) {
       myLog("trace", "Table %s: Confirmed as Raw/Output sheet (LabelRow=0).", this.longName);
     }
+    this.initColumns()
 
-    myLog("trace", "Initialized columnMap for %s with %d labels", this.longName, this._columnMap.size);
+    myLog("trace", "Initialized columns for %s with %d labels", this.longName, validLabelsCount);
+  }
+
+  // 1. Centralized cleaning logic (Helper method)
+  _canonicalize(label) {
+    if (typeof label !== 'string') return label;
+    return label.trim().replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  }
+
+  initColumns() {
+    const rawTarget = Object.fromEntries(
+      this._labels
+        .filter(label => label !== "")
+        .map((label, offset) => [this._canonicalize(label), offset])
+    );
+
+    // Wrap in a Proxy to auto-clean keys on lookup
+    const self = this; // Maintain reference to the class helper
+    this.column = new Proxy(rawTarget, {
+      get(target, prop) {
+        if (typeof prop === 'string') {
+          return target[self._canonicalize(prop)];
+        }
+        return Reflect.get(target, prop);
+      }
+    });
   }
 
   // =========================================================================
@@ -122,60 +127,11 @@ class Table extends Sheet {
   }
 
   /**
-   * O(1) Column Index Resolver
-   */
-  getColOffset(name) {
-    if (!name) return -1;
-    // 1. Try exact match (Fastest, zero overhead)
-    let off = this._columnMap.get(name);
-    if (off !== undefined) return off;
-
-    // 2. Exact match failed. Lazy-initialize the lowercase map if it doesn't exist yet
-    if (!this._lowercaseColumnMap) {
-      this._lowercaseColumnMap = new Map();
-      for (const [label, offset] of this._columnMap.entries()) {
-        this._lowercaseColumnMap.set(String(label).trim().toLowerCase(), offset);
-      }
-    }
-
-    // 3. High-speed lookup in the newly cached map
-    const searchName = String(name).trim().toLowerCase();
-    off = this._lowercaseColumnMap.get(searchName);
-    return off !== undefined ? off : -1;
-  }
-
-  /**
-   * Helper to resolve a symbolic map of fields to their column offsets.
-   */
-  getOffsets(fieldMap) {
-    const offsets = {};
-    for (const [key, colName] of Object.entries(fieldMap)) {
-      offsets[key] = this.getColOffset(colName);
-    }
-    return offsets;
-  }
-
-  /**
-   * Automatically resolves symbolic offsets for this table based on the global TABLE_COLUMN_MAP.
-   */
-  getSymbolicOffsets() {
-    const map = TABLE_COLUMN_MAP[this.longName];
-    if (!map) {
-      throw new Error(`Symbolic Map Error: No column mapping defined in Constants for table "${this.longName}".`);
-    }
-    return this.getOffsets(map);
-  }
-
-  /**
    * Data Access by Label
    */
   getValueByLabel(rowOffset, label) {
     try {
-      const colOffset = this.getColOffset(label);
-      if (colOffset === -1) {
-        throw new Error(`Column label "${label}" not found.`);
-      }
-      return this.get(rowOffset, colOffset);
+      return this.get(rowOffset, this.column[label]);
     } catch (e) {
       throw new Error(`[Logical Layer: ${this.longName}] getValueByLabel(${rowOffset}, "${label}") Failure: ${e.message}`);
     }
@@ -183,11 +139,7 @@ class Table extends Sheet {
 
   setValueByLabel(rowOffset, label, val) {
     try {
-      const colOffset = this.getColOffset(label);
-      if (colOffset === -1) {
-        throw new Error(`Cannot SET value. Column label "${label}" not found.`);
-      }
-      this.set(rowOffset, colOffset, val);
+      this.set(rowOffset, this.column[label], val);
     } catch (e) {
       throw new Error(`[Logical Layer: ${this.longName}] setValueByLabel(${rowOffset}, "${label}") Failure: ${e.message}`);
     }
@@ -196,11 +148,8 @@ class Table extends Sheet {
   /**
    * Bulk updates disjoint cells by column label using relative row offsets.
    */
-  setBatchedValuesByLabel(label, value, rowOffsetsArray) {
-    const colOffset = this.getColOffset(label);
-    if (colOffset !== -1) {
-      this.setBatchedValuesInColumn(colOffset, value, rowOffsetsArray);
-    }
+  setValueByLabelAndRowOffsets(label, value, rowOffsetsArray) {
+    this.setValueByColumnOffsetAndRowOffsets(this.column[label], value, rowOffsetsArray);
   }
 
   /**
@@ -213,10 +162,28 @@ class Table extends Sheet {
         throw new Error(`Invalid row offset ${rowOffset} for object conversion. Window length: ${this.windowDataLength}`);
       }
 
-      return Array.from(this._columnMap.entries()).reduce((obj, [label, colOff]) => {
-        obj[label] = this.get(rowOffset, colOff);
-        return obj;
-      }, {});
+      // Pass a dummy target object (or metadata) into the Proxy
+      // We intercept reads and pull live from `this.get` via `this.column`
+      return new Proxy({ _rowOffset: rowOffset }, {
+        get: (target, prop) => {
+          // Handle normal string property lookups (column names)
+          if (typeof prop === 'string') {
+            const colOff = this.column[prop]; // Reuses the exact proxy lookup from initColumns!
+            if (colOff !== undefined) {
+              return this.get(target._rowOffset, colOff);
+            }
+          }
+          return Reflect.get(target, prop);
+        },
+        // Optional: Allows Object.keys() or spreading to work seamlessly if needed
+        ownKeys: () => {
+          return this._labels.filter(label => label !== "");
+        },
+        getOwnPropertyDescriptor: (target, prop) => {
+          return { enumerable: true, configurable: true };
+        }
+      });
+
     } catch (e) {
       throw new Error(`[Logical Layer: ${this.longName}] getRowObjectByOffset(${rowOffset}) Failure: ${e.message}`);
     }
@@ -236,9 +203,6 @@ class Table extends Sheet {
 
       const labels = this.getLabels();
       const fieldTypes = labels.map(label => TypeUtils.getType(this.longName, label));
-      const clearedOff = this.getColOffset("Cleared");
-      const groupOff = this.getColOffset("Group");
-      const entryTypeOff = this.getColOffset("EntryType");
 
       // Resolve which physical range needs validation
       const winEndRow = this._windowStartRow + this.windowDataLength - 1;
@@ -261,11 +225,11 @@ class Table extends Sheet {
 
         let isCleared = true;
         let rawCleared = "true";
-        if (clearedOff !== -1) {
-          rawCleared = row[clearedOff];
+        if (this.column.cleared !== undefined) {
+          rawCleared = row[this.column.cleared];
           isCleared = (String(rawCleared).toUpperCase() === "TRUE");
-        } else if (groupOff !== -1) {
-          const rawGroup = row[groupOff];
+        } else if (this.column.group !== undefined) {
+          const rawGroup = row[this.column.group];
           isCleared = (rawGroup !== undefined && rawGroup !== null && String(rawGroup).trim() !== "" && String(rawGroup).trim() !== "0");
           rawCleared = isCleared ? "true" : "false";
         }
@@ -283,7 +247,7 @@ class Table extends Sheet {
             this.longName === "Reconciliation_UnChecked";
 
           let isMandatory = isTransactionTable && (CONFIG_CONSTANTS.MANDATORY_TABLE_FIELDS || []).includes(label);
-          const entryType = entryTypeOff !== -1 ? String(row[entryTypeOff] || "").trim().toUpperCase() : "ACTIVITY";
+          const entryType = this.column.entrytype !== undefined ? String(row[this.column.entrytype] || "").trim().toUpperCase() : "ACTIVITY";
 
           // Rule 1: Group is only mandatory once the row is Cleared
           if (label === "Group" && !isCleared) isMandatory = false;
@@ -359,18 +323,11 @@ class Table extends Sheet {
       case !!targetKeyField: {
         // PRIORITY 1: Single Key
         // If a 'Key' is explicitly defined (e.g., "PK"), it overrides everything else.
-        const keyOffset = this.getColOffset(targetKeyField);
-
-        // Fail-Fast: If the configured Key column doesn't exist in the physical sheet, crash immediately.
-        if (keyOffset === -1) {
-          const labels = this.getLabels();
-          throw new Error(`CRITICAL: Key column '${targetKeyField}' not found in ${this.longName}. Available Columns: [${labels.join(", ")}]`);
-        }
 
         // Cache the metadata schema
         this._keyMetadata = {
           type: "single",
-          offset: keyOffset,
+          offset: this.column[targetKeyField],
           fieldType: TypeUtils.getType(this.longName, targetKeyField)
         };
         break;
@@ -384,10 +341,10 @@ class Table extends Sheet {
         this._keyMetadata = {
           type: "composite",
           fields: fieldList.map(field => {
-            const fieldOffset = this.getColOffset(field);
+            const fieldOffset = this.column[field];
 
             // Fail-Fast: Every sub-field in the composite key must physically exist.
-            if (fieldOffset === -1) throw new Error("CRITICAL: KeyField '" + field + "' not found in " + this.longName);
+            if (fieldOffset === undefined) throw new Error("CRITICAL: KeyField '" + field + "' not found in " + this.longName);
 
             return {
               offset: fieldOffset,
@@ -462,24 +419,6 @@ class Table extends Sheet {
   }
 
   /**
-   * Initializes and populates the Primary Key Hash Map.
-   * This provides O(1) lookups for deduplication during Update/Replace operations.
-   */
-  buildHashKeyMap() {
-    // Use flatMap to build key-value pairs while natively satisfying type inference (no nulls)
-    this._hashKeyMap = new Map(
-      this.getWindow().flatMap((row, index) => {
-        const key = this.getRowKey(row);
-        return key ? [[String(key).trim().toLowerCase(), index]] : [];
-      })
-    );
-
-    this._isHashed = true;
-
-    myLog("trace", "Table %s: Hashed %d keys from RAM window.", this.longName, this._hashKeyMap.size);
-  }
-
-  /**
    * Scans the physical table rows in memory, identifies duplicate rows by their calculated Primary Key,
    * and clears/rewrites the table in-place leaving only the first occurrence of each unique key.
    *
@@ -496,37 +435,37 @@ class Table extends Sheet {
     this.clearCache();
     this.fetch(startRow);
     const window = this.getWindow();
+    const beforeCount = window.length;
 
     if (window.length === 0) {
       myLog("info", "Deduplicate %s: Sheet is already empty.", this.longName);
       return { beforeCount: 0, afterCount: 0, duplicatesRemoved: 0 };
     }
 
-    const beforeCount = window.length;
-    const seenKeys = new Set();
-    const deduplicatedRows = [];
-    const duplicatePKs = [];
-
     // 2. Identify and filter out duplicate rows
-    for (let rOff = 0; rOff < window.length; rOff++) {
-      const row = window[rOff];
+    // 2. Identify and filter out duplicate rows functionally
+    const { deduplicatedRows, duplicatePKs } = window.reduce((acc, row, rOff) => {
       const keyRaw = this.getRowKey(row);
+
       if (!keyRaw) {
         // If a row has no PK, preserve it blindly
-        deduplicatedRows.push(row);
-        continue;
+        acc.deduplicatedRows.push(row);
+        return acc;
       }
 
-      const key = String(keyRaw).trim().toLowerCase();
-      if (seenKeys.has(key)) {
+      const trimmedKey = String(keyRaw).trim();
+      const normalizedKey = trimmedKey.toLowerCase();
+
+      if (acc.seenKeys.has(normalizedKey)) {
         myLog("info", "Deduplicate %s: Identified duplicate PK '%s' at row offset %d", this.longName, keyRaw, rOff);
-        duplicatePKs.push(String(keyRaw).trim());
-        continue;
+        acc.duplicatePKs.push(trimmedKey);
+      } else {
+        acc.seenKeys.add(normalizedKey);
+        acc.deduplicatedRows.push(row);
       }
 
-      seenKeys.add(key);
-      deduplicatedRows.push(row);
-    }
+      return acc;
+    }, { deduplicatedRows: [], duplicatePKs: [], seenKeys: new Set() });
 
     const afterCount = deduplicatedRows.length;
     const duplicatesRemoved = beforeCount - afterCount;
@@ -553,17 +492,33 @@ class Table extends Sheet {
   }
 
   /**
+ * Initializes and populates the Primary Key Hash Map.
+ * This provides O(1) lookups for deduplication during Update/Replace operations.
+ */
+  buildHashKeyMap() {
+    // Use flatMap to build key-value pairs while natively satisfying type inference (no nulls)
+    this._hashKeyMap = new Map(
+      this.getWindow().flatMap((row, index) => {
+        const key = this.getRowKey(row);
+        return key ? [[String(key).trim().toLowerCase(), index]] : [];
+      })
+    );
+
+    this._isHashed = true;
+
+    myLog("trace", "Table %s: Hashed %d keys from RAM window.", this.longName, this._hashKeyMap.size);
+  }
+
+  /**
    * Lazy accessor for the Hash Key Map.
    * Ensures the map is built exactly once on demand.
    */
   getHashKeyMap() {
-    if (!this._isHashed) {
-      this.buildHashKeyMap();
-    }
+    if (!this._isHashed) this.buildHashKeyMap();
     return this._hashKeyMap;
   }
 
-  getRowOffset(key) {
+  getRowOffsetFromKey(key) {
     return this.getHashKeyMap().get(String(key).trim().toLowerCase());
   }
 
@@ -586,11 +541,9 @@ class Table extends Sheet {
 
     // 2. Cache Miss: We have never performed a lookup for this column pair yet
     if (!this._lookupCacheMap.has(cacheKey)) {
-      const keyOffset = this.getColOffset(keyCol);
-      const valOffset = this.getColOffset(valCol);
 
       // Fail safely if the columns don't physically exist in the sheet
-      if (keyOffset === -1 || valOffset === -1) return "";
+      if (this.column[keyCol] === undefined || this.column[valCol] === undefined) return "";
 
       const lookupMap = new Map();
       this._lookupCacheMap.set(cacheKey, lookupMap);
@@ -604,9 +557,9 @@ class Table extends Sheet {
         this.fetch(this.firstDataRowIndex);
 
         this._window.forEach(row => {
-          const k = row[keyOffset];
+          const k = row[this.column[keyCol]];
           if (k !== undefined && k !== "") {
-            lookupMap.set(String(k).toLowerCase(), row[valOffset]);
+            lookupMap.set(String(k).toLowerCase(), row[this.column[valCol]]);
           }
         });
         myLog("trace", "Built lookup cache for %s (%s->%s)", this.longName, keyCol, valCol);
@@ -618,8 +571,6 @@ class Table extends Sheet {
 
     // 3. Backward Chunk Scan Fallback: If searching Reconciliation_Groups and not yet in cache, fetch next chunk of CONFIG_CONSTANTS.SHEET_CHUNK_SIZE rows
     if (this.longName === "Reconciliation_Groups" && !lookupMap.has(searchKeyLower) && this._lookupLastRowFetched && this._lookupLastRowFetched >= this.firstDataRowIndex) {
-      const keyOffset = this.getColOffset(keyCol);
-      const valOffset = this.getColOffset(valCol);
       const chunkSize = CONFIG_CONSTANTS.SHEET_CHUNK_SIZE;
 
       while (!lookupMap.has(searchKeyLower) && this._lookupLastRowFetched >= this.firstDataRowIndex) {
@@ -631,9 +582,9 @@ class Table extends Sheet {
         this.fetch(startRow, numRows);
 
         this._window.forEach(row => {
-          const k = row[keyOffset];
+          const k = row[this.column[keyCol]];
           if (k !== undefined && k !== "") {
-            lookupMap.set(String(k).toLowerCase(), row[valOffset]);
+            lookupMap.set(String(k).toLowerCase(), row[this.column[valCol]]);
           }
         });
 
@@ -673,8 +624,8 @@ class Table extends Sheet {
 
     // 3. SheetNameColumnName (Per column)
     this.getLabels().forEach(label => {
-      const colOff = this.getColOffset(label);
-      if (colOff !== -1) {
+      const colOff = this.column[label];
+      if (colOff !== undefined) {
         this.writeNamedRange(safeSheetName + Utils.cleanNameForRange(label), startRow, colOff + 1, numRows, 1);
       }
     });
@@ -693,9 +644,8 @@ class Table extends Sheet {
   calculateFirstRowByDate(targetDate, dateLabel = "Date") {
     if (!this.sheet) return this.firstDataRowIndex;
 
-    const dateCol = this.getColOffset(dateLabel);
 
-    if (dateCol === -1) {
+    if (this.column[dateLabel] === undefined) {
       myLog("warn", "Table %s: Cannot calculate FirstRow by date. Column '%s' not found.", this.longName, dateLabel);
       return this.firstDataRowIndex;
     }
@@ -711,7 +661,7 @@ class Table extends Sheet {
 
     if (lastRow < searchStartRow) return searchStartRow;
 
-    const dateValues = this.sheet.getRange(searchStartRow, dateCol + 1, lastRow - searchStartRow + 1, 1).getValues();
+    const dateValues = this.sheet.getRange(searchStartRow, this.column[dateLabel] + 1, lastRow - searchStartRow + 1, 1).getValues();
     const targetTime = targetDate.getTime();
 
     for (let i = 0; i < dateValues.length; i++) {
@@ -728,49 +678,25 @@ class Table extends Sheet {
   }
 
   /**
-   * Resolves the primary date column label for this sheet.
-   * Defaults to 'Date' if not configured, but falls back to 'DateEvent' 
-   * if 'Date' doesn't exist and 'DateEvent' does.
-   * @returns {string}
-   */
-  getDateFieldName() {
-    let dateFieldName = this.getProperty("DateField") || "Date";
-    if (this.getColOffset(dateFieldName) === -1 && dateFieldName === "Date" && this.getColOffset("DateEvent") !== -1) {
-      return "DateEvent";
-    }
-    return dateFieldName;
-  }
-
-  /**
    * Generates and writes keys for rows that have dates but no keys.
    */
   makeKeys() {
-    const keyFieldName = this.getProperty("Key") || "PK";
-    const dateFieldName = this.getDateFieldName();
+    const keyFieldName = this.getProperty("Key");
+    const dateFieldName = this.getProperty("DateField");
     const keyPrefix = this.getProperty("KeyPrefix") || "";
-
-    const keyOffset = this.getColOffset(keyFieldName);
-    const dateOffset = this.getColOffset(dateFieldName);
-
-    if (keyOffset === -1) {
-      throw new Error(`[Table Error: ${this.longName}] Column '${keyFieldName}' not found.`);
-    }
-    if (dateOffset === -1) {
-      throw new Error(`[Table Error: ${this.longName}] Column '${dateFieldName}' not found.`);
-    }
 
     let count = 0;
     this.getWindow().forEach((row, rowOffset) => {
-      const keyVal = row[keyOffset];
-      const dateVal = row[dateOffset];
+      const keyVal = row[this.column[keyFieldName]];
+      const dateVal = row[this.column[dateFieldName]];
       const hasDate = dateVal !== "" && dateVal !== null && dateVal !== undefined;
       const hasNoKey = keyVal === "" || keyVal === null || keyVal === undefined;
 
       if (hasNoKey && hasDate) {
         const newKey = this.makeKey(dateVal, keyPrefix);
         const physicalRow = this.firstDataRowIndex + rowOffset;
-        this.sheet.getRange(physicalRow, keyOffset + 1).setValue(newKey);
-        this.set(rowOffset, keyOffset, newKey);
+        this.sheet.getRange(physicalRow, this.column[keyFieldName] + 1).setValue(newKey);
+        this.set(rowOffset, this.column[keyFieldName], newKey);
         count++;
       }
     });

@@ -48,12 +48,11 @@ function _importNamedSheet(longName, forceUpdate = false, suppressAlerts = false
       
       // Sync the State Machine: Mark as processed even if run individually
       const sheetsTable = globals.sheetsObj;
-      const cols = sheetsTable.getSymbolicOffsets();
-      if (cols.process !== -1) {
+      if (sheetsTable.column.process !== -1) {
         const regRowOff = sheetsTable.getRowOffset(longName);
         if (regRowOff !== undefined) {
            const physicalRow = regRowOff + sheetsTable.firstDataRowIndex;
-           sheetsTable.sheet.getRange(physicalRow, cols.process + 1).setValue(false);
+           sheetsTable.sheet.getRange(physicalRow, sheetsTable.column.process + 1).setValue(false);
         }
       }
 
@@ -84,8 +83,7 @@ function _triggerDownstreamSheets(longName) {
   myLog("info", "Triggers: %s import complete. Queuing downstream tasks: %s", longName, downstream.join(", "));
   
   const sheetsTable = globals.sheetsObj;
-  const cols = sheetsTable.getSymbolicOffsets();
-  if (cols.process === -1) return;
+  if (sheetsTable.column.process === -1) return;
 
   downstream.forEach(targetLongName => {
     const config = Registry.getSheetConfig(targetLongName);
@@ -97,7 +95,7 @@ function _triggerDownstreamSheets(longName) {
     const regRowOff = sheetsTable.getRowOffset(targetLongName);
     if (regRowOff !== undefined) {
       const physicalRow = regRowOff + sheetsTable.firstDataRowIndex;
-      sheetsTable.sheet.getRange(physicalRow, cols.process + 1).setValue(true);
+      sheetsTable.sheet.getRange(physicalRow, sheetsTable.column.process + 1).setValue(true);
       myLog("info", "Triggers: Set %s to Process=TRUE", targetLongName);
     }
   });
@@ -157,19 +155,19 @@ function _calculateAndSaveWindow(longName, year) {
     // 2. Resolve Registry Columns
     const sheetsTable = globals.sheetsObj;
     
-    const firstRowCol = sheetsTable.getColOffset("FirstRow");
-    const lastRowCol = sheetsTable.getColOffset("LastRow");
-    const fromFYCol = sheetsTable.getColOffset("FromFY");
+    const firstRowCol = sheetsTable.column.firstrow;
+    const lastRowCol = sheetsTable.column.lastrow;
+    const fromFYCol = sheetsTable.column.fromfy;
 
-    if (firstRowCol === -1 || lastRowCol === -1) {
-      myLog("error", "Registry Column Map: %s", JSON.stringify(sheetsTable.getSymbolicOffsets()));
+    if (firstRowCol === undefined || lastRowCol === undefined) {
+      myLog("error", "Registry Column Map: %s", JSON.stringify(sheetsTable.column));
       throw new Error(`Registry Metadata Error: Could not find "FirstRow" or "LastRow" columns in NewAccounts_Sheets.`);
     }
     
     // Convert to 1-indexed column numbers
     const firstRowColIdx = firstRowCol + 1;
     const lastRowColIdx = lastRowCol + 1;
-    const fromFYColIdx = fromFYCol !== -1 ? fromFYCol + 1 : -1;
+    const fromFYColIdx = fromFYCol !== undefined ? fromFYCol + 1 : -1;
     
     myLog("trace", "Resolved Registry Columns -> FirstRow: %d, LastRow: %d, FromFY: %d", firstRowColIdx, lastRowColIdx, fromFYColIdx);
 

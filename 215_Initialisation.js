@@ -9,10 +9,10 @@ const PatchManager = (() => {
     hydrate() {
       if (!globals.correctionsObj) return;
       
-      const pkOff = globals.correctionsObj.getColOffset(CONFIG_CONSTANTS.CORRECTIONS_CONFIG_PK);
-      const patchOff = globals.correctionsObj.getColOffset("PatchData");
+      const pkOff = globals.correctionsObj.column[CONFIG_CONSTANTS.CORRECTIONS_CONFIG_PK.toLowerCase()];
+      const patchOff = globals.correctionsObj.column.patchdata;
       
-      if (pkOff === -1 || patchOff === -1) {
+      if (pkOff === undefined || patchOff === undefined) {
         throw new Error("Bootstrap Failure: PatchManager Corrections sheet is missing mandatory columns [GlobalID, PatchData].");
       }
 
@@ -109,7 +109,6 @@ const Registry = (() => {
       // 1. Index Sheets
       if (globals.sheetsObj) {
         const labels = globals.sheetsObj.getLabels();
-        const cols = globals.sheetsObj.getSymbolicOffsets();
         
         globals.sheetsObj.getWindow().forEach((row, idx) => {
           const config = globals.sheetsObj.getRowObjectByOffset(idx);
@@ -135,8 +134,8 @@ const Registry = (() => {
             _sheetsByName.set(sheetName, config);
 
             // Populate prefix map dynamically from KeyPrefix configuration
-            if (cols.keyPrefix !== -1) {
-              const keyPrefixRaw = row[cols.keyPrefix];
+            if (globals.sheetsObj.column.keyprefix !== undefined) {
+              const keyPrefixRaw = row[globals.sheetsObj.column.keyprefix];
               if (keyPrefixRaw) {
                 String(keyPrefixRaw).split(",").forEach(p => {
                   const prefixClean = p.trim();
@@ -160,8 +159,9 @@ const Registry = (() => {
 
       // 2. Index Formulas (Grouped by Table)
       if (globals.formulasObj) {
-        const targetFieldOff = globals.formulasObj.getColOffset(CONFIG_CONSTANTS.FORMULAS_CONFIG_PK);
-        const formulaOff = globals.formulasObj.getColOffset("Formula");
+        const formulaKey = Registry.lookupValue(CONFIG_CONSTANTS.FORMULAS_SHEET_NAME, "Key");
+        const targetFieldOff = globals.formulasObj.column[formulaKey.toLowerCase()];
+        const formulaOff = globals.formulasObj.column.formula;
         
         globals.formulasObj.getWindow().forEach(row => {
           const fullRef = String(row[targetFieldOff] || "").trim();
@@ -256,13 +256,7 @@ const Registry = (() => {
               delete depMap[globalName];
             }
           }
-          
-          // D. Update TABLE_COLUMN_MAP keys
-          const colMap = TABLE_COLUMN_MAP;
-          if (colMap && colMap[globalName]) {
-            colMap[realLongName] = colMap[globalName];
-            delete colMap[globalName];
-          }
+
         } catch (e) {
           throw e; // Propagate registry configuration errors to fail-fast
         }
@@ -300,7 +294,7 @@ const Registry = (() => {
       if (!globals.sheetsObj) return null;
       const val = globals.sheetsObj.lookupValue(CONFIG_CONSTANTS.SHEETS_CONFIG_PK, targetField, pkValue);
       
-      if (globals.sheetsObj.getColOffset(targetField) === -1) {
+      if (globals.sheetsObj.column[targetField.toLowerCase()] === undefined) {
          myLog("trace", "Registry Column Missing [%s]: Column '%s' not found in config sheet.", 
            CONFIG_CONSTANTS.SHEETS_CONFIG_NAME, targetField);
       }
@@ -411,10 +405,10 @@ function initialize() {
   globals.sheetInstances[CONFIG_CONSTANTS.SHEETS_CONFIG_NAME] = globals.sheetsObj;
 
   // Stage 3: SSID Map (Strict matching)
-  const ssNameOff = globals.sheetsObj.getColOffset("SpreadSheetName");
-  const ssidOff = globals.sheetsObj.getColOffset("SSID");
+  const ssNameOff = globals.sheetsObj.column.spreadsheetname;
+  const ssidOff = globals.sheetsObj.column.ssid;
   
-  if (ssNameOff === -1 || ssidOff === -1) {
+  if (ssNameOff === undefined || ssidOff === undefined) {
     const labels = globals.sheetsObj.getLabels();
     throw new Error(`Registry Initialization Failed: Missing mandatory column(s) in "${CONFIG_CONSTANTS.SHEETS_CONFIG_NAME}". 
     Expected: "SpreadSheetName" and "SSID". 
@@ -465,13 +459,13 @@ function initialize() {
   globals.dataTypesObj = new Table(getSpreadsheet(dtName), dtName, datatypesConfig);
   globals.sheetInstances[dtName] = globals.dataTypesObj;
   
-  const colOff = globals.dataTypesObj.getColOffset(datatypesConfig.Key);
-  const typeOff = globals.dataTypesObj.getColOffset("Type");
+  const colOff = globals.dataTypesObj.column[datatypesConfig.Key.toLowerCase()];
+  const typeOff = globals.dataTypesObj.column.type;
   
   myLog("info", "DataTypes Columns -> %s (%s), Type (%s)", 
     datatypesConfig.Key, StringUtils.columnToLetter(colOff), StringUtils.columnToLetter(typeOff));
 
-  if (colOff !== -1 && typeOff !== -1) {
+  if (colOff !== undefined && typeOff !== undefined) {
     globals.dataTypesMap = new Map(globals.dataTypesObj.getWindow()
       .filter(row => row[colOff] && row[typeOff])
       .map(row => [String(row[colOff]).trim(), String(row[typeOff]).trim()])
@@ -500,13 +494,13 @@ function initialize() {
   globals.formulasObj = new Table(getSpreadsheet(fName), fName, formulasConfig);
   globals.sheetInstances[fName] = globals.formulasObj;
   
-  const fTargetOff = globals.formulasObj.getColOffset(formulasConfig.Key);
-  const fFormulaOff = globals.formulasObj.getColOffset("Formula");
+  const fTargetOff = globals.formulasObj.column[formulasConfig.Key.toLowerCase()];
+  const fFormulaOff = globals.formulasObj.column.formula;
 
   myLog("info", "Formulas Columns -> %s (%s), Formula (%s)", 
     formulasConfig.Key, StringUtils.columnToLetter(fTargetOff), StringUtils.columnToLetter(fFormulaOff));
 
-  if (fTargetOff !== -1 && fFormulaOff !== -1) {
+  if (fTargetOff !== undefined && fFormulaOff !== undefined) {
     globals.formulaMap = new Map(globals.formulasObj.getWindow()
       .filter(row => row[fTargetOff] && row[fFormulaOff])
       .map(row => [String(row[fTargetOff]).trim(), String(row[fFormulaOff]).trim()])

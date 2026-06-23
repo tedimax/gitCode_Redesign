@@ -21,21 +21,20 @@ class ReconcileProcessor extends ReconcileBuilder {
    * @returns {{ balancedTxs: Array }}
    */
   _collectBalancedTransactions() {
-    const reconcileCols = this.getSymbolicOffsets();
 
     const balancedTxs = this.getWindow()
-      .filter(row => TypeUtils.isTrue(row[reconcileCols.balanced]))
+      .filter(row => TypeUtils.isTrue(row[this.column.balanced]))
       .map(row => {
-        let fy = String(row[reconcileCols.transactionFY] || "").trim();
-        if (!fy && reconcileCols.date !== undefined && reconcileCols.date !== -1 && row[reconcileCols.date]) {
-          fy = DateUtils.toFY(row[reconcileCols.date]);
+        let fy = String(row[this.column.transactionFY] || "").trim();
+        if (!fy && this.column.date !== undefined && row[this.column.date]) {
+          fy = DateUtils.toFY(row[this.column.date]);
         }
 
         return {
-          PK:      String(row[reconcileCols.pk]),
-          Group:   row[reconcileCols.transaction],
+          PK: String(row[this.column.pk]),
+          Group: row[this.column.transaction],
           Cleared: true,
-          FY:      fy
+          FY: fy
         };
       });
 
@@ -57,11 +56,11 @@ class ReconcileProcessor extends ReconcileBuilder {
     // rather than a virtual UnionTable, so that row offsets correspond to actual physical cells.
     const config = Registry.getSheetConfig(CONFIG_CONSTANTS.MERGED_TABLE_NAME);
     const physicalConfig = { ...config, SheetType: "Table", FirstRow: 2, firstrow: 2 };
-    
+
     const ssName = config.SpreadSheetName || "Reconciliation";
     const ssid = globals.ssMap.get(ssName) || globals.defaultSSID;
     const ss = getSpreadsheetInstance(ssid);
-    
+
     const mergedTable = new Table(ss, CONFIG_CONSTANTS.MERGED_TABLE_NAME, physicalConfig);
     const logTable = getSheetInstance("NewAccounts_ReconcileLog");
 
@@ -77,7 +76,7 @@ class ReconcileProcessor extends ReconcileBuilder {
    * @param {UpdateTable} groupsTable 
    * @param {Table} mergedTable 
    * @param {UpdateTable} logTable 
-   * @returns {{ groupsNewData: Array, logNewData: Array, mergedBatches: Object }}
+   * * @returns {{ txsWithGlobalIds: Array, groupsNewData: Array, logNewData: Array, mergedBatches: Object }}
    */
   _stageGroupUpdates(balancedTxs, groupsTable, mergedTable, logTable) {
     // 1. Assign auto-incrementing Global Group IDs
@@ -102,9 +101,8 @@ class ReconcileProcessor extends ReconcileBuilder {
    * @returns {number} The next starting GlobalGroupID
    */
   _calculateNextGlobalGroupId(groupsTable) {
-    const groupCols = groupsTable.getSymbolicOffsets();
     const existingGroupIds = groupsTable.getWindow()
-      .map(row => groupCols.group !== -1 ? Number(row[groupCols.group]) : 0)
+      .map(row => groupsTable.column.group !== undefined ? Number(row[groupsTable.column.group]) : 0)
       .filter(n => !isNaN(n));
     return existingGroupIds.length > 0 ? Math.max(...existingGroupIds) + 1 : 1;
   }
@@ -140,20 +138,19 @@ class ReconcileProcessor extends ReconcileBuilder {
    * @returns {Array<Array<any>>} The newly generated rows ready for persistence
    */
   _buildGroupsTableRows(txsWithGlobalIds, groupsTable, mergedTable) {
-    const groupCols = groupsTable.getSymbolicOffsets();
     const groupTableLabels = groupsTable.getLabels();
 
     const groupsNewData = txsWithGlobalIds.map(tx => {
-      const mergedRowOffset = mergedTable.getRowOffset(tx.PK);
+      const mergedRowOffset = mergedTable.getRowOffsetFromKey(tx.PK);
       return groupTableLabels.map((label, colIdx) => {
         switch (colIdx) {
-          case groupCols.pk:      return tx.PK;
-          case groupCols.group:   return tx.GlobalGroupID;
-          case groupCols.cleared: return tx.Cleared;
-          case groupCols.fy:      return tx.FY;
+          case groupsTable.column.pk: return tx.PK;
+          case groupsTable.column.group: return tx.GlobalGroupID;
+          case groupsTable.column.cleared: return tx.Cleared;
+          case groupsTable.column.fy: return tx.FY;
           default:
             if (mergedRowOffset !== undefined) {
-              const mergedColOffset = mergedTable.getColOffset(label);
+              const mergedColOffset = mergedTable.column[label];
               if (mergedColOffset !== -1) {
                 return mergedTable.get(mergedRowOffset, mergedColOffset);
               }
@@ -163,8 +160,8 @@ class ReconcileProcessor extends ReconcileBuilder {
       });
     });
 
-    if (groupCols.group !== -1 && groupsNewData.length > 0) {
-      groupsNewData.sort((a, b) => Number(a[groupCols.group] || 0) - Number(b[groupCols.group] || 0));
+    if (groupsTable.column.group !== undefined && groupsNewData.length > 0) {
+      groupsNewData.sort((a, b) => Number(a[groupsTable.column.group] || 0) - Number(b[groupsTable.column.group] || 0));
     }
     return groupsNewData;
   }
@@ -179,11 +176,11 @@ class ReconcileProcessor extends ReconcileBuilder {
    */
   _buildMergedTableBatchUpdates(txsWithGlobalIds, mergedTable) {
     return txsWithGlobalIds.reduce((groupedOffsets, tx) => {
-      const mergedRowOffset = mergedTable.getRowOffset(tx.PK);
+      const mergedRowOffset = mergedTable.getRowOffsetFromKey(tx.PK);
       if (mergedRowOffset !== undefined) {
         // Every balanced transaction gets its 'Cleared' checkbox set to TRUE in the Merged sheet.
         groupedOffsets.clearedOffsets.push(mergedRowOffset);
-        
+
         const groupsExistingOffsets = groupedOffsets.groupsOffsetsByVal.get(tx.GlobalGroupID) || [];
         groupedOffsets.groupsOffsetsByVal.set(tx.GlobalGroupID, [...groupsExistingOffsets, mergedRowOffset]);
 
@@ -209,7 +206,6 @@ class ReconcileProcessor extends ReconcileBuilder {
    * @returns {Array<Array<any>>} The newly generated log rows ready for persistence
    */
   _buildReconcileLogRows(txsWithGlobalIds, logTable) {
-    const logCols = logTable.getSymbolicOffsets();
     const labelsLength = logTable.getLabels().length;
 
     return txsWithGlobalIds.reduce((logs, tx) => {
@@ -218,10 +214,10 @@ class ReconcileProcessor extends ReconcileBuilder {
         const ledgerName = this._getLedgerNameFromPrefix(prefixMatch[1]);
         if (ledgerName) {
           const logRow = new Array(labelsLength).fill("");
-          if (logCols.sheetName     !== -1) logRow[logCols.sheetName]     = ledgerName;
-          if (logCols.transactionId !== -1) logRow[logCols.transactionId] = tx.PK;
-          if (logCols.groupId       !== -1) logRow[logCols.groupId]       = tx.GlobalGroupID;
-          if (logCols.clearStatus   !== -1) logRow[logCols.clearStatus]   = true;
+          if (logTable.column.sheetname !== undefined) logRow[logTable.column.sheetname] = ledgerName;
+          if (logTable.column.transactionid !== undefined) logRow[logTable.column.transactionid] = tx.PK;
+          if (logTable.column.groupid !== undefined) logRow[logTable.column.groupid] = tx.GlobalGroupID;
+          if (logTable.column.clearstatus !== undefined) logRow[logTable.column.clearstatus] = true;
           logs.push(logRow);
         }
       }
@@ -238,13 +234,13 @@ class ReconcileProcessor extends ReconcileBuilder {
    */
   _executeMergedTableBatchUpdates(mergedTable, batchUpdates) {
     if (batchUpdates.clearedOffsets.length > 0) {
-      mergedTable.setBatchedValuesByLabel("Cleared", true, batchUpdates.clearedOffsets);
+      mergedTable.setValueByLabelAndRowOffsets("Cleared", true, batchUpdates.clearedOffsets);
     }
     batchUpdates.groupsOffsetsByVal.forEach((offsets, groupId) => {
-      mergedTable.setBatchedValuesByLabel("Group", groupId, offsets);
+      mergedTable.setValueByLabelAndRowOffsets("Group", groupId, offsets);
     });
     batchUpdates.fyOffsetsByVal.forEach((offsets, fyVal) => {
-      mergedTable.setBatchedValuesByLabel("FY", fyVal, offsets);
+      mergedTable.setValueByLabelAndRowOffsets("FY", fyVal, offsets);
     });
   }
 
@@ -260,7 +256,7 @@ class ReconcileProcessor extends ReconcileBuilder {
   _getLedgerNameFromPrefix(prefix) {
     if (!prefix) return null;
     const target = Registry.getLongNameByPrefix(prefix) || prefix;
-    
+
     // Redirect active manual entry tables to their corresponding ledgers.
     // The manual entry sheets themselves are purely for data entry and are never written to by the program.
     const redirections = {
@@ -268,7 +264,7 @@ class ReconcileProcessor extends ReconcileBuilder {
       "ManualEntry_Holdings": "Ledgers_Assets",
       "ManualEntry_Cashbox": "Ledgers_Cash"
     };
-    
+
     return redirections[target] || target;
   }
 }

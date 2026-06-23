@@ -82,9 +82,9 @@ class FileTable extends UpdateTable {
    * Safety Override for writeBlock.
    * If a spreadsheet is attached (Staging mode), we allow the write.
    */
-  writeBlock(matrix, startRow, startCol = 1) {
+  writeBlock(matrix, startRow) {
     if (this.ss) {
-      return super.writeBlock(matrix, startRow, startCol);
+      return super.writeBlock(matrix, startRow);
     }
     myLog("warn", "SAFETY: Blocked attempt to writeBlock to virtual FileTable %s", this.longName);
   }

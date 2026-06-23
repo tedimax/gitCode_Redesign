@@ -37,7 +37,7 @@ class GenerateTable extends ImportTable {
     if (labels.includes("PK") && !this._compiledFormulaMap.has("PK")) {
       myLog("trace", "GenerateTable: Injecting fallback formula for PK");
       this._rawFormulaMap.set("PK", "pk2([PK], eventDate())");
-      
+
       const parsedFormula = FormulaUtils.parse("pk2([PK], eventDate())", sourceLongName, "PK", this.longName);
       this._compiledFormulaMap.set("PK", new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return ' + parsedFormula));
     }
@@ -64,23 +64,7 @@ class GenerateTable extends ImportTable {
     // Utils.getSourceSheet() handles fail-fast if missing.
     const sourceSheet = Utils.getSourceSheet(this);
 
-    // Identify required columns in the source sheet for expansion math
-    const scheduleCols = sourceSheet.getSymbolicOffsets();
-
-    // Fallback search for unit/multiplier column if "Unit" is missing
-    if (scheduleCols.unit === -1) {
-      const unitHeaders = ["Period", "Every", "Repeat", "Multiplier", "RepeatEvery", "Times"];
-      for (const h of unitHeaders) {
-        const off = sourceSheet.getColOffset(h);
-        if (off !== -1) {
-          scheduleCols.unit = off;
-          myLog("info", "GenerateTable: Found unit/multiplier column under name '%s' at offset %d", h, off);
-          break;
-        }
-      }
-    }
-
-    if (scheduleCols.dateStart === -1 || scheduleCols.dateEnd === -1 || scheduleCols.interval === -1) {
+    if (sourceSheet.column.datestart === undefined || sourceSheet.column.dateend === undefined || sourceSheet.column.interval === undefined) {
       throw new Error(`Scheduling Error: Source sheet '${sourceSheet.longName}' is missing mandatory scheduling columns (DateStart, DateEnd, Interval).`);
     }
 
@@ -97,7 +81,7 @@ class GenerateTable extends ImportTable {
     // To prevent generating transactions infinitely into the future, we cap generation 
     // at the end of the active Financial Year (which runs April 1st to March 31st).
     let activeYear = new Date().getFullYear();
-    
+
     if (targetBoundaryDate) {
       // Strategy A: If we have a target boundary date (last synced transaction date),
       // resolve the active Financial Year based on that transaction's date context.
@@ -111,11 +95,11 @@ class GenerateTable extends ImportTable {
       if (now.getMonth() < 3) activeYear = now.getFullYear() - 1;
       else activeYear = now.getFullYear();
     }
-    
+
     // Cap generation at March 31st of the calendar year following the FY start (Month 2 is March in 0-indexed JS Dates)
-    const fyEndDate = new Date(activeYear + 1, 2, 31); 
-    
-    myLog("info", "GenerateTable: Active Financial Year resolved as FY%d. Capping scheduled occurrences at %s", 
+    const fyEndDate = new Date(activeYear + 1, 2, 31);
+
+    myLog("info", "GenerateTable: Active Financial Year resolved as FY%d. Capping scheduled occurrences at %s",
       activeYear, fyEndDate.toISOString().split('T')[0]);
 
     myLog("info", "Starting Expansion Engine for %s...", this.longName);
@@ -128,10 +112,10 @@ class GenerateTable extends ImportTable {
         return accumulator;
       }
 
-      const startDate = sourceRow[scheduleCols.dateStart];
-      const endDate = sourceRow[scheduleCols.dateEnd];
-      const multiplier = sourceRow[scheduleCols.interval];
-      const frequency = sourceRow[scheduleCols.unit];
+      const startDate = sourceRow[sourceSheet.column.datestart];
+      const endDate = sourceRow[sourceSheet.column.dateend];
+      const multiplier = sourceRow[sourceSheet.column.interval];
+      const frequency = sourceRow[sourceSheet.column.unit];
 
       // Strict Validation: Enforce that DateStart and DateEnd are always set for active templates (PK is present)
       if (!startDate) {
@@ -191,11 +175,11 @@ class GenerateTable extends ImportTable {
     }
 
     // 4. Serialize to matrix
-    const newData = this._serializeObjectsToMatrix(expandedObjects);
+    const newData = this._serializeRowObjectsToMatrix(expandedObjects);
 
-    myLog("info", "Expansion complete for %s. Generated %d rows from %d templates.", 
+    myLog("info", "Expansion complete for %s. Generated %d rows from %d templates.",
       this.longName, newData.length, sourceSheet.windowDataLength);
-    
+
     return newData;
   }
 
@@ -208,39 +192,37 @@ class GenerateTable extends ImportTable {
    * @private
    */
   _getTargetBoundaryDate(dateFieldName) {
-    const dateColOffset = this.getColOffset(dateFieldName);
-    if (dateColOffset === -1) return null;
 
     const prevRowIndex = this.firstDataRowIndex - 1;
     const labelRowIdx = Number(this.getProperty("LabelRow")) || 1;
-    
+
     // 1. Primary Strategy: Try to read the date from the row immediately above our target write window
     if (this.sheet && prevRowIndex > labelRowIdx) {
-      const resolvedDateRaw = this.sheet.getRange(prevRowIndex, dateColOffset + 1).getValue();
+      const resolvedDateRaw = this.sheet.getRange(prevRowIndex, this.column[dateFieldName] + 1).getValue();
       if (resolvedDateRaw) {
         const parsed = resolvedDateRaw instanceof Date ? resolvedDateRaw : new Date(resolvedDateRaw);
         if (!isNaN(parsed.getTime())) {
-          myLog("info", "Target Window Date Boundary for %s: %s (preceding row %d date)", 
+          myLog("info", "Target Window Date Boundary for %s: %s (preceding row %d date)",
             this.longName, parsed.toISOString().split('T')[0], prevRowIndex);
           return parsed;
         }
       }
     }
-    
+
     // 2. Secondary Strategy (Fallback): If there is no preceding row, look at the first cached window row
     const targetRows = this.getWindow();
     if (targetRows.length > 0) {
-      const firstRowDateRaw = targetRows[0][dateColOffset];
+      const firstRowDateRaw = targetRows[0][this.column[dateFieldName]];
       if (firstRowDateRaw) {
         const parsed = firstRowDateRaw instanceof Date ? firstRowDateRaw : new Date(firstRowDateRaw);
         if (!isNaN(parsed.getTime())) {
-          myLog("info", "Target Window Date Boundary for %s: %s (first row date fallback)", 
+          myLog("info", "Target Window Date Boundary for %s: %s (first row date fallback)",
             this.longName, parsed.toISOString().split('T')[0]);
           return parsed;
         }
       }
     }
-    
+
     return null;
   }
 }

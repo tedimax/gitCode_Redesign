@@ -53,6 +53,7 @@ class Sheet {
     this.absoluteFirstRow = Number(this._properties.firstrow) || 2;
     const slackRows = Number(this._properties.windowslack) || 0;
     this.firstDataRowIndex = Math.max(2, this.absoluteFirstRow - slackRows);
+    this.dataStartRow = this.absoluteFirstRow;
     this.windowDataLength = 0;
     this.currentRowOffset = 0;
     this._isFetched = false;
@@ -122,7 +123,7 @@ class Sheet {
    * Applies a single value to a disjoint batch of cells in a specific column.
    * Translates 0-indexed relative row offsets into physical A1 notations.
    */
-  setBatchedValuesInColumn(colOffset, value, rowOffsetsArray) {
+  setValueByColumnOffsetAndRowOffsets(colOffset, value, rowOffsetsArray) {
     if (!this.sheet || !rowOffsetsArray || rowOffsetsArray.length === 0) return;
     const colLetter = StringUtils.columnToLetter(colOffset);
     const a1List = rowOffsetsArray.map(off => `${colLetter}${this.firstDataRowIndex + off}`);
@@ -277,7 +278,7 @@ class Sheet {
 
   clearDataArea() {
     const lastRow = this.getLastRowIndex();
-    const wipeStartRow = this.absoluteFirstRow ?? this.firstDataRowIndex;
+    const wipeStartRow = this.dataStartRow;
     // Guard: If there is no data area to clear, reset cache and exit early
     if (lastRow < wipeStartRow) {
       this._cachedLastRowIndex = wipeStartRow - 1;

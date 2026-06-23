@@ -8,6 +8,8 @@
 class UpdateTable extends Table {
   constructor(ss, longName, properties = {}) {
     super(ss, longName, properties);
+    /** @type {Set<any>} */
+    this._pksToDelete = new Set();
   }
 
   /**
@@ -16,7 +18,7 @@ class UpdateTable extends Table {
    */
   execute() {
     myLog("info", "Starting execution for %s...", this.longName);
-    
+
     // UI Feedback: Toast on Start (Uses external utility to keep Orchestrator clean)
     if (typeof Utils !== 'undefined' && typeof Utils.displayStartToast === 'function') {
       Utils.displayStartToast(this, this._modeOverride);
@@ -24,16 +26,16 @@ class UpdateTable extends Table {
 
     // 1. Prepare Ingestion (Transformation/Fetch)
     const newData = this.prepare() || [];
-    
+
     // 2. Persist results
     const stats = this.persist(newData);
 
     // 3. Post-Persistence Hooks (e.g. Styling)
     this.afterSync(stats, newData);
-    
+
     // 4. Final Cleanup
     this.flushMemory();
-    
+
     myLog("info", "Execution complete for %s. Stats: %s", this.longName, JSON.stringify(stats));
 
     // UI Feedback: Toast on Finish (Uses external utility)
@@ -66,15 +68,12 @@ class UpdateTable extends Table {
    * @param {Array<Array<any>>} newData - The matrix of row data to write.
    * @param {string} mode - 'replace', 'update', or 'add'. Defaults to instance override or props.importmethod.
    */
-  persist(newData, mode = this._modeOverride || (this.getProperty("importmethod") || "replace")) {
-    const configMethod = this.getProperty("importmethod") || "replace";
-    const overrideMethod = this._modeOverride || "none";
-    myLog("info", "Table %s persistence routing -> Configured: '%s' | Override: '%s' | Final Mode: '%s'", 
-      this.longName, configMethod, overrideMethod, mode);
+  persist(newData, mode = this._modeOverride || this.getProperty("importmethod")) {
+    myLog("info", "Table %s persistence routing Mode: '%s'", this.longName, mode);
 
     // Fail-fast: Ensure newData is explicitly provided
     if (!newData) {
-       throw new Error(`fail-fast: persist() called without newData for ${this.longName}. Data must be explicitly prepared and passed.`);
+      throw new Error(`fail-fast: persist() called without newData for ${this.longName}. Data must be explicitly prepared and passed.`);
     }
 
     // --- IN-MEMORY OVERRIDE ---
@@ -88,8 +87,8 @@ class UpdateTable extends Table {
     // 1. Transactional Locking: Prevent concurrent syncs from corrupting data
     const lock = LockService.getScriptLock();
     try {
-      // Wait for up to 30 seconds for the lock
-      lock.waitLock(30000);
+      // Wait for lock acquisition
+      lock.waitLock(CONFIG_CONSTANTS.LOCK_TIMEOUT_MS);
     } catch (e) {
       throw new Error(`Could not acquire script lock for ${this.longName}. Another sync may be in progress. Details: ${e.message}`);
     }
@@ -98,8 +97,6 @@ class UpdateTable extends Table {
       // 3. Route to specific persistence logic
       let stats = { added: 0, updated: 0 };
       let normalizedMode = String(mode).toLowerCase();
-      
-
 
       switch (normalizedMode) {
         case "replace":
@@ -147,16 +144,11 @@ class UpdateTable extends Table {
     const sortField = this.getProperty("SortField");
     if (!sortField) return;
 
-    const sortColOffset = this.getColOffset(sortField);
-    if (sortColOffset === -1) {
-      throw new Error(`Configuration Error: SortField '${sortField}' not found in table '${this.longName}'. Please check the registry.`);
-    }
-
     const lastRow = this.getLastRowIndex();
     if (lastRow <= this.firstDataRowIndex) return;
 
     // Physical column is 1-indexed (colOffset + 1)
-    const physicalCol = sortColOffset + 1;
+    const physicalCol = this.column[sortField] + 1;
     const numRows = lastRow - this.firstDataRowIndex + 1;
     const numCols = this.getLastColumnIndex();
 
@@ -166,15 +158,16 @@ class UpdateTable extends Table {
       // Build a stable sort spec: primary = SortField, secondary = Sequence (or PK if Sequence is not present)
       // (preserves source order for rows that share the same date, e.g. two balance snapshots on 31 Mar).
       const sortSpec = [{ column: physicalCol, ascending: true }];
-      const seqOffset = this.getColOffset("Sequence");
-      if (seqOffset !== -1 && seqOffset + 1 !== physicalCol) {
-        sortSpec.push({ column: seqOffset + 1, ascending: true });
+      const sequence = this.column.sequence;
+
+      if (sequence !== undefined && !Number.isNaN(sequence) && sequence !== -1 && sequence + 1 !== physicalCol) {
+        sortSpec.push({ column: sequence + 1, ascending: true });
         range.sort(sortSpec);
-        myLog("info", "Sorted %s by %s (Col %d) + Sequence tiebreak (Col %d)", this.longName, sortField, physicalCol, seqOffset + 1);
+        myLog("info", "Sorted %s by %s (Col %d) + Sequence tiebreak (Col %d)", this.longName, sortField, physicalCol, sequence + 1);
       } else {
-        const pkOffset = this.getColOffset("pk");
-        if (pkOffset !== -1 && pkOffset + 1 !== physicalCol) {
-          sortSpec.push({ column: pkOffset + 1, ascending: true });
+        const keyOffset = this.column[this.getProperty("Key")];
+        if (keyOffset !== -1 && keyOffset + 1 !== physicalCol) {
+          sortSpec.push({ column: keyOffset + 1, ascending: true });
         }
         range.sort(sortSpec);
         myLog("info", "Sorted %s by %s (Col %d) + PK tiebreak", this.longName, sortField, physicalCol);
@@ -188,10 +181,9 @@ class UpdateTable extends Table {
     this.clearDataArea();
 
     if (newData.length > 0) {
-      const writeStartRow = this.absoluteFirstRow || this.firstDataRowIndex;
-      this.writeChunks(writeStartRow, newData);
+      this.writeChunks(this.dataStartRow, newData);
     }
-    
+
     myLog("info", "Replace complete: %d rows written to %s.", newData.length, this.longName);
     return { added: newData.length, updated: 0 };
   }
@@ -236,7 +228,7 @@ class UpdateTable extends Table {
     let deletedCount = 0;
     if (this._pksToDelete && this._pksToDelete.size > 0) {
       myLog("info", "UpdateTable: Processing %d pending deletions for %s...", this._pksToDelete.size, this.longName);
-      
+
       const offsetsToDelete = [];
       this._pksToDelete.forEach(pk => {
         const pkLower = String(pk).toLowerCase().trim();
@@ -245,19 +237,19 @@ class UpdateTable extends Table {
           offsetsToDelete.push(offset);
         }
       });
-      
+
       // Sort descending to prevent shifting issues during deletion
       offsetsToDelete.sort((a, b) => b - a);
-      
+
       offsetsToDelete.forEach(offset => {
         const physicalRow = (this._windowStartRow !== null ? this._windowStartRow : this.firstDataRowIndex) + offset;
         myLog("info", "UpdateTable: Deleting physical row %d from %s", physicalRow, this.longName);
         this.deleteRow(physicalRow);
       });
-      
+
       deletedCount = offsetsToDelete.length;
       this._pksToDelete.clear();
-      
+
       // Invalidate cache since row positions shifted
       this.clearCache();
     }
@@ -289,13 +281,13 @@ class UpdateTable extends Table {
       if (existingRowOff !== undefined) {
         // Enforce Read-Only Slack Window: Do not update historical rows that lie before the absolute start row boundary
         const physicalRowIndex = (this._windowStartRow !== null ? this._windowStartRow : this.firstDataRowIndex) + existingRowOff;
-        if (this.absoluteFirstRow && physicalRowIndex < this.absoluteFirstRow) {
+        if (this.dataStartRow && physicalRowIndex < this.dataStartRow) {
           return; // Skip updates to locked/historical entries
         }
 
         // Retrieve the matching existing row from the sheet cache window
         const existingRow = this.getWindow()[existingRowOff];
-        
+
         // Scan each column to determine if any field values have changed (is dirty)
         const isDirty = newRow.some((newVal, colOff) => {
           const columnName = labels[colOff];
@@ -304,40 +296,40 @@ class UpdateTable extends Table {
           }
 
           const fieldType = fieldTypes[colOff];
-          
+
           // Normalize both values using the defined schema type for the column
           const normalizedNew = TypeUtils.castType(newVal, fieldType);
           const normalizedExisting = TypeUtils.castType(existingRow[colOff], fieldType);
-          
+
           // Default check: simple stringified comparison
           let dirty = String(normalizedNew) !== String(normalizedExisting);
-          
+
           // Performance/Precision Guard: Fuzzy numeric comparison for floating point numbers
           // This avoids false-positive dirty flags caused by minor JavaScript float representation issues
           if (dirty && typeof normalizedNew === 'number' && typeof normalizedExisting === 'number') {
             const columnName = labels[colOff];
             // 'balance' gets a dedicated fuzzy threshold, other numeric columns get the standard threshold
-            const threshold = (columnName && columnName.toLowerCase() === "balance") 
-              ? CONFIG_CONSTANTS.FUZZY_BALANCE_THRESHOLD 
+            const threshold = (columnName && columnName.toLowerCase() === "balance")
+              ? CONFIG_CONSTANTS.FUZZY_BALANCE_THRESHOLD
               : CONFIG_CONSTANTS.FUZZY_NUMERIC_THRESHOLD;
-            
+
             // Re-evaluate dirty status using the tolerance threshold
             dirty = Math.abs(normalizedNew - normalizedExisting) > threshold;
           }
-          
+
           // Primary Key Guard: Perform case-insensitive string comparison for Primary Key fields (PK)
           if (labels[colOff] && labels[colOff].toUpperCase() === "PK" && dirty) {
             dirty = String(normalizedNew).toLowerCase() !== String(normalizedExisting).toLowerCase();
           }
-          
+
           // Log detailed traces for the specific column mismatch if it remains dirty
           if (dirty) {
-            myLog("trace", "  Column '%s' is dirty: New [%s] vs Existing [%s] (RAW: Source [%s] / Target [%s])", 
+            myLog("trace", "  Column '%s' is dirty: New [%s] vs Existing [%s] (RAW: Source [%s] / Target [%s])",
               labels[colOff], normalizedNew, normalizedExisting, newVal, existingRow[colOff]);
           }
           return dirty;
         });
-        
+
         // If one or more columns are dirty, mark this row as requiring an update
         if (isDirty) {
           myLog("trace", "Row " + idx + " (Key: " + rowKey + ") -> UPDATE (Dirty)");
@@ -364,7 +356,7 @@ class UpdateTable extends Table {
     rowsToUpdate.sort((a, b) => a.offset - b.offset);
 
     let currentBlock = [rowsToUpdate[0]];
-    
+
     for (let i = 1; i < rowsToUpdate.length; i++) {
       const currentRow = rowsToUpdate[i];
       const previousRow = rowsToUpdate[i - 1];
@@ -385,7 +377,7 @@ class UpdateTable extends Table {
    */
   _writeRowBlock(rowBlock) {
     if (rowBlock.length === 0) return;
-    
+
     const startRow = (this._windowStartRow !== null ? this._windowStartRow : this.firstDataRowIndex) + rowBlock[0].offset;
     const matrix = rowBlock.map(item => item.data);
     this.writeBlock(startRow, matrix);

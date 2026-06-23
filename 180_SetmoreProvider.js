@@ -9,30 +9,14 @@
 class SetmoreProvider extends CalendarTable {
   constructor(ss, longName, config = {}) {
     super(ss, longName, config);
-    
+
     // Resolve Setmore specific parameters (Constructor Option -> Registry Property -> CONFIG_CONSTANTS default)
     this.refreshToken = config.refreshToken || this.getProperty("refreshToken") || CONFIG_CONSTANTS.SETMORE_REFRESH_TOKEN;
     this.staffName = config.staffName || this.getProperty("staffName") || CONFIG_CONSTANTS.SETMORE_STAFF_NAME;
     this.tuyaPINLength = Number(config.tuyaPINLength !== undefined ? config.tuyaPINLength : (this.getProperty("tuyaPINLength") !== null ? this.getProperty("tuyaPINLength") : CONFIG_CONSTANTS.TUYA_PIN_LENGTH));
-    
+
     this.accessToken = this.getSetmoreAccessToken();
     this.staffKey = this.getStaffKeyByName(this.staffName);
-    
-    // Resolve symbolic column offsets
-    this.cols = this.getSymbolicOffsets() || {};
-    
-    // Dynamically resolve key offset from the Registry's "Key" property
-    const keyHeader = this.getProperty("Key") || "Key";
-    this.cols.key = this.getColOffset(keyHeader);
-    
-    // Validate that all required symbolic columns are present
-    const requiredKeys = ['key', 'start', 'end', 'duration', 'email', 'comment', 'customer', 'encryptedPin'];
-    requiredKeys.forEach(k => {
-      if (this.cols[k] === undefined || this.cols[k] === -1) {
-        const label = k === 'key' ? keyHeader : TABLE_COLUMN_MAP[this.longName][k];
-        throw new Error(`SetmoreProvider: Required column "${label}" is missing from sheet ${this.longName}.`);
-      }
-    });
   }
 
   /**
@@ -42,31 +26,31 @@ class SetmoreProvider extends CalendarTable {
   getAppointments() {
     const rawAppointments = this.fetchAppointments();
     const labels = this.getLabels();
-    
+
     return rawAppointments.reduce((appointments, appointment) => {
       const c = appointment.customer || {};
       const customerName = `${c.first_name || 'New'} ${c.last_name || 'Customer'}`.trim();
       try {
         const lastDigits = String(c.cell_phone || "").replace(/[^0-9]/g, "").slice(-this.tuyaPINLength);
         myLog("trace", "SetmoreProvider: cell %s, lastDigits %s", String(c.cell_phone), lastDigits);
-        
+
         const row = new Array(labels.length);
-        
+
         // Populate standard columns using resolved symbolic offsets
-        row[this.cols.key] = appointment.key;
-        row[this.cols.start] = new Date(appointment.start_time);
-        row[this.cols.end] = new Date(appointment.end_time);
-        row[this.cols.duration] = appointment.duration;
-        row[this.cols.email] = c.email_id || "No Email";
-        row[this.cols.comment] = appointment.comment || "";
-        row[this.cols.customer] = customerName;
-        row[this.cols.encryptedPin] = lastDigits ? CryptoUtils.encrypt(lastDigits) : "";
-        
+        row[this.column[this.getProperty("Key")]] = appointment.key;
+        row[this.column.start] = new Date(appointment.start_time);
+        row[this.column.end] = new Date(appointment.end_time);
+        row[this.column.duration] = appointment.duration;
+        row[this.column.email] = c.email_id || "No Email";
+        row[this.column.comment] = appointment.comment || "";
+        row[this.column.customer] = customerName;
+        row[this.column.encryptedpin] = lastDigits ? CryptoUtils.encrypt(lastDigits) : "";
+
         // Fill any empty cells with empty string to prevent write issues
         for (let i = 0; i < row.length; i++) {
           if (row[i] === undefined) row[i] = "";
         }
-        
+
         appointments.push(row);
       } catch (e) {
         myLog("error", `Error processing appointment ${appointment.key}: ${e.message}`);

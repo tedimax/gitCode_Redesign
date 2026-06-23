@@ -9,55 +9,20 @@ class TuyaTable extends UpdateTable {
   constructor(ss, longName, config = {}) {
     super(ss, longName, config);
     this.accessToken = this.getAccessToken();
-    this.cols = this.getSymbolicOffsets() || {};
-    
-    // Dynamically resolve id offset from the Registry's "Key" property
-    const keyHeader = this.getProperty("Key") || "id";
-    this.cols.id = this.getColOffset(keyHeader);
-    
-    // Validate required columns based on sheet role
-    let requiredKeys = [];
-    if (this.longName === "Keys_IssuedPINS") {
-      requiredKeys = ['id', 'encryptedPin', 'name', 'appointmentTime', 'effectiveTime', 'invalidTime', 'issued'];
-    } else if (this.longName === "Keys_TuyaTempPINS") {
-      requiredKeys = ['id', 'effectiveTime', 'invalidTime', 'deliveryStatus', 'phase'];
-    } else if (this.longName === "Keys_TuyaLogs") {
-      requiredKeys = ['id', 'updateTime'];
-    }
-    
-    requiredKeys.forEach(k => {
-      if (this.cols[k] === undefined || this.cols[k] === -1) {
-        const label = k === 'id' ? keyHeader : TABLE_COLUMN_MAP[this.longName][k];
-        throw new Error(`TuyaTable [${this.longName}]: Required column "${label}" is missing from sheet.`);
-      }
-    });
   }
 
-  /**
-   * Helper to construct a local key-to-row-object cache using native Table methods.
-   * Replaces the legacy windowObject proxy.
-   */
-  _buildRowObjectCache() {
-    return this.getWindow().reduce((cache, row, offset) => {
-      const key = this.getRowKey(row, this.firstDataRowIndex + offset);
-      if (key) {
-        cache[key] = this.getRowObjectByOffset(offset);
-      }
-      return cache;
-    }, {});
-  }
+
 
   issueTempPINs() {
     const tempBookings = getSheetInstance("Keys_TemporaryBookings");
-    const tempBookCols = tempBookings.getSymbolicOffsets() || {};
-    
-    if (tempBookCols.email === undefined || tempBookCols.email === -1 ||
-        tempBookCols.encryptedPin === undefined || tempBookCols.encryptedPin === -1 ||
-        tempBookCols.start === undefined || tempBookCols.start === -1) {
+
+    if (tempBookings.column.email === undefined ||
+      tempBookings.column.encryptedpin === undefined ||
+      tempBookings.column.start === undefined) {
       throw new Error("TuyaTable: Missing mandatory columns [Email, EncryptedPIN, Start] in Keys_TemporaryBookings.");
     }
 
-    const apptTimeCol = this.cols.appointmentTime;
+    const apptTimeCol = this.column.appointmenttime;
     if (apptTimeCol === undefined || apptTimeCol === -1) {
       throw new Error(`TuyaTable: Required column "appointment_time" not found in ${this.longName}.`);
     }
@@ -70,25 +35,25 @@ class TuyaTable extends UpdateTable {
     );
 
     const filteredBookings = tempBookings.getWindow().filter(row =>
-      row[tempBookCols.start] && !issuedAppointmentTimes.has(new Date(row[tempBookCols.start]).setSeconds(0, 0)));
-      
+      row[tempBookings.column.start] && !issuedAppointmentTimes.has(new Date(row[tempBookings.column.start]).setSeconds(0, 0)));
+
     const newRows = filteredBookings.map(booking => {
       const appointment = {
-        name: String(booking[tempBookCols.email] || "").substr(0, 20),
-        pin: CryptoUtils.decrypt(booking[tempBookCols.encryptedPin]),
-        appointmentTime: new Date(booking[tempBookCols.start])
+        name: String(booking[tempBookings.column.email] || "").substr(0, 20),
+        pin: CryptoUtils.decrypt(booking[tempBookings.column.encryptedpin]),
+        appointmentTime: new Date(booking[tempBookings.column.start])
       };
       const parms = this.enrollTemporaryPIN(appointment);
       return this.buildAccessLogRow(appointment, parms.payload, parms.results);
     });
-    
+
     this.addRows(newRows);
   }
 
   issueNewPIN(appointment) {
     const parms = this.enrollTemporaryPIN(appointment);
     const row = this.buildAccessLogRow(appointment, parms.payload, parms.results);
-    this.addRows(row);
+    this.addRows([row]);
     return parms.results;
   }
 
@@ -98,11 +63,11 @@ class TuyaTable extends UpdateTable {
     date.setHours(0, 0, 0, 0);
     const start = Math.floor(date.getTime() / 1000) - CONFIG_CONSTANTS.ONE_DAY_IN_SECONDS;
     const end = Math.floor(date.getTime() / 1000) + CONFIG_CONSTANTS.TWO_DAYS_IN_SECONDS_MINUS_ONE;
-    
+
     const ticketRes = this.makeTuyaApiRequest('POST', getProp('TUYA_PIN_REQUEST'));
     const decryptedTicketKey = this.decryptTuyaTicket(ticketRes.result.ticket_key);
     const finalPasswordHex = this.encryptPinWithTicket(pin, decryptedTicketKey);
-    
+
     const payload = {
       "name": name,
       "password": finalPasswordHex,
@@ -112,7 +77,7 @@ class TuyaTable extends UpdateTable {
       "invalid_time": end,
       "type": 0
     };
-    
+
     const results = this.makeTuyaApiRequest('POST', getProp('TUYA_TEMP_PIN'), payload);
     return { payload, results };
   }
@@ -121,48 +86,54 @@ class TuyaTable extends UpdateTable {
     const { name, pin, appointmentTime } = appointment;
     const labels = this.getLabels();
     const row = new Array(labels.length);
-    
+
     row.fill("");
-    
-    row[this.cols.id] = (results.result.id || results.result || "").toString();
-    row[this.cols.encryptedPin] = CryptoUtils.encrypt(pin);
-    row[this.cols.name] = name;
-    row[this.cols.appointmentTime] = new Date(appointmentTime);
-    row[this.cols.effectiveTime] = new Date(payload.effective_time * 1000);
-    row[this.cols.invalidTime] = new Date(payload.invalid_time * 1000);
-    row[this.cols.issued] = new Date();
-    
+
+    row[this.column[this.getProperty("Key")]] = (results.result.id || results.result || "").toString();
+    row[this.column.encryptedpin] = CryptoUtils.encrypt(pin);
+    row[this.column.name] = name;
+    row[this.column.appointmenttime] = new Date(appointmentTime);
+    row[this.column.effectivetime] = new Date(payload.effective_time * 1000);
+    row[this.column.invalidtime] = new Date(payload.invalid_time * 1000);
+    row[this.column.issued] = new Date();
+
     labels.forEach((columnLabel, offset) => {
-      const isKnown = (offset === this.cols.id ||
-                       offset === this.cols.encryptedPin ||
-                       offset === this.cols.name ||
-                       offset === this.cols.appointmentTime ||
-                       offset === this.cols.effectiveTime ||
-                       offset === this.cols.invalidTime ||
-                       offset === this.cols.issued);
+      const isKnown = (offset === this.column[this.getProperty("Key")] ||
+        offset === this.column.encryptedpin ||
+        offset === this.column.name ||
+        offset === this.column.appointmenttime ||
+        offset === this.column.effectivetime ||
+        offset === this.column.invalidtime ||
+        offset === this.column.issued);
       if (!isKnown) {
         row[offset] = results[columnLabel] !== undefined ? results[columnLabel] : "";
       }
     });
-    
+
     return row;
   }
 
   updateLockLogs() {
-    const updateTimeKey = TABLE_COLUMN_MAP[this.longName].updateTime || "update_time";
     const accessLogs = this.getLockLogs().map(logRow => {
+      const rowArray = new Array(this.getLabels().length).fill("");
       Object.entries(logRow).forEach(([key, value]) => {
         if (typeof value === 'object' && value !== null) {
-          Object.entries(value).map(([subKey, subVal]) => logRow[`${key}_${subKey}`] = subVal);
+          Object.entries(value).forEach(([subKey, subVal]) => {
+            const colIdx = this.column[`${key}_${subKey}`];
+            if (colIdx !== undefined) rowArray[colIdx] = subVal;
+          });
         } else {
-          if (key === "update_time") {
-            logRow[updateTimeKey] = new Date(value);
-          } else {
-            logRow[key] = value;
+          const colIdx = this.column[key];
+          if (colIdx !== undefined) {
+            if (key === "update_time" || key === "updatetime") {
+              rowArray[colIdx] = new Date(value);
+            } else {
+              rowArray[colIdx] = value;
+            }
           }
         }
       });
-      return logRow;
+      return rowArray;
     });
     this.updateRows(accessLogs);
   }
@@ -198,43 +169,45 @@ class TuyaTable extends UpdateTable {
     const newRows = [];
     const currentInventory = this.getTempPINS();
     const inventoryIds = new Set();
-    
-    // Construct local key-to-row-object cache natively
-    const windowObject = this._buildRowObjectCache();
-    
-    const idKey = TABLE_COLUMN_MAP[this.longName].id || "id";
-    const phaseKey = TABLE_COLUMN_MAP[this.longName].phase || "phase";
-    const deliveryStatusKey = TABLE_COLUMN_MAP[this.longName].deliveryStatus || "delivery_status";
-    const effectiveTimeKey = TABLE_COLUMN_MAP[this.longName].effectiveTime || "effective_time";
-    const invalidTimeKey = TABLE_COLUMN_MAP[this.longName].invalidTime || "invalid_time";
-    
+    const now = new Date();
+
     currentInventory.forEach(lockRow => {
+      // Prevent "ping-pong" thrashing: skip PINs that are already expired
+      if (lockRow.invalid_time && new Date(lockRow.invalid_time * 1000) < now) {
+        return;
+      }
+
       myLog("trace", "TuyaTable: id %s, phase %s", lockRow.id, lockRow.phase);
       inventoryIds.add(String(lockRow.id));
-      
-      const processedRow = {};
-      processedRow[idKey] = String(lockRow.id);
-      processedRow[phaseKey] = lockRow.phase;
-      processedRow[deliveryStatusKey] = CONFIG_CONSTANTS.TUYA_PHASES[lockRow.phase];
-      
-      if (lockRow.effective_time) {
-        processedRow[effectiveTimeKey] = new Date(lockRow.effective_time * 1000);
-      }
-      if (lockRow.invalid_time) {
-        processedRow[invalidTimeKey] = new Date(lockRow.invalid_time * 1000);
-      }
-      
+
       const exists = this.getHashKeyMap().has(String(lockRow.id).toLowerCase());
+      let rowArray;
+
       if (exists) {
-        newRows.push({ ...windowObject[lockRow.id], ...processedRow });
+        const offset = this.getRowOffsetFromKey(lockRow.id);
+        rowArray = [...this.getWindow()[offset]];
       } else {
-        newRows.push(processedRow);
+        rowArray = new Array(this.getLabels().length).fill("");
       }
+
+      if (this.column.id !== undefined) rowArray[this.column.id] = String(lockRow.id);
+      if (this.column.phase !== undefined) rowArray[this.column.phase] = lockRow.phase;
+      if (this.column.deliverystatus !== undefined) rowArray[this.column.deliverystatus] = CONFIG_CONSTANTS.TUYA_PHASES[lockRow.phase];
+
+      if (lockRow.effective_time && this.column.effectivetime !== undefined) {
+        rowArray[this.column.effectivetime] = new Date(lockRow.effective_time * 1000);
+      }
+      if (lockRow.invalid_time && this.column.invalidtime !== undefined) {
+        rowArray[this.column.invalidtime] = new Date(lockRow.invalid_time * 1000);
+      }
+
+      newRows.push(rowArray);
     });
-    
-    this.updateRows(newRows);
-    
-    const now = new Date();
+
+    if (newRows.length > 0) {
+      this.updateRows(newRows);
+    }
+
     const idsToDelete = [];
     this.getWindow().forEach((row, idx) => {
       const existingId = this.getRowKey(row, this.firstDataRowIndex + idx);
@@ -243,21 +216,21 @@ class TuyaTable extends UpdateTable {
         idsToDelete.push(existingId);
         return;
       }
-      const expiryVal = row[this.cols.invalidTime];
+      const expiryVal = row[this.column.invalidtime];
       if (expiryVal && new Date(expiryVal) < now) {
         idsToDelete.push(existingId);
       }
     });
-    
+
     if (idsToDelete.length > 0) {
       const offsetsToDelete = idsToDelete
         .map(id => {
-          const offset = this.getRowOffset(id);
+          const offset = this.getRowOffsetFromKey(id);
           return offset === undefined ? -1 : offset;
         })
         .filter(offset => offset !== -1)
         .sort((a, b) => b - a);          // Sort DESCENDING (highest index first)
-        
+
       myLog("trace", "TuyaTable: Deleting rows at offsets: %j", offsetsToDelete);
       offsetsToDelete.forEach(offset => this.deleteRowByOffset(offset));
     }
@@ -302,11 +275,11 @@ class TuyaTable extends UpdateTable {
     let token = getProp('TUYA_ACCESS_TOKEN');
     const expiryTime = getProp('TUYA_TOKEN_EXPIRY'); // Stores timestamp in ms
     const now = Date.now();
-    
+
     if (!(token && expiryTime && (now < (parseInt(expiryTime) - 300000))) || getProp('TUYA_EXPIRY_OVERRIDE') === "TRUE") {
       const timestamp = now;
       const tuyaSigningString = getProp('TUYA_CLIENT_ID') + timestamp + 'GET\n' + getProp('SHA256_OF_NOTHING') + '\n\n' + getProp('TUYA_SIGN_URL');
-      
+
       const options = {
         headers: {
           client_id: getProp('TUYA_CLIENT_ID'),
@@ -315,12 +288,12 @@ class TuyaTable extends UpdateTable {
           sign_method: getProp('TUYA_SIGN_METHOD')
         }
       };
-      
+
       const result = UrlFetchApp.fetch(getProp('TUYA_URL') + getProp('TUYA_SIGN_URL'), options);
       const data = JSON.parse(result.getContentText());
       if (!data.success)
         throw new Error('Tuya Auth Failed: ' + data.msg);
-        
+
       token = data.result.access_token;
       const expireInMs = data.result.expire_time * 1000;
       setProp('TUYA_ACCESS_TOKEN', token);
@@ -344,23 +317,23 @@ class TuyaTable extends UpdateTable {
         .map(b => (b & 0xFF).toString(16).padStart(2, '0'))
         .join('')
       : getProp('SHA256_OF_NOTHING');
-      
+
     const pathParts = path.split('?');
     const urlPath = pathParts[0];
     const queryString = pathParts[1] || "";
-    
+
     const sortedQueryString = queryString.split('&')
       .filter(param => param.length > 0)
       .sort()
       .join('&');
-      
+
     const canonicalRequest = httpMethod + '\n' +
       bodyHash + '\n' +
       '\n' +
       urlPath + (sortedQueryString ? '?' + sortedQueryString : '');
-      
+
     const tuyaSigningString = getProp('TUYA_CLIENT_ID') + this.accessToken + timestamp + canonicalRequest;
-    
+
     const options = {
       method: httpMethod,
       headers: {
@@ -374,7 +347,7 @@ class TuyaTable extends UpdateTable {
       payload: (httpMethod === 'GET' || !body) ? null : JSON.stringify(body),
       muteHttpExceptions: true
     };
-    
+
     const result = JSON.parse(UrlFetchApp.fetch(getProp('TUYA_URL') + path, options).getContentText());
     if (!result.success)
       throw new Error(`API Error [${path}]: ${result.msg} (Code: ${result.code})`);
@@ -396,70 +369,17 @@ class TuyaTable extends UpdateTable {
   // BATCH MODIFICATION METHODS (NATIVE CONVERSION)
   // =========================================================================
 
-  normaliseRows(newRows) {
-    if (!newRows) return [];
-    let rows = Array.isArray(newRows) ? newRows : [newRows];
-    if (rows.length === 0) return [];
-    
-    // Wrapped if flat array
-    if (typeof rows[0] !== 'object' || rows[0] === null) {
-      rows = [rows];
-    }
-    
-    const labels = this.getLabels();
-    const map = TABLE_COLUMN_MAP[this.longName] || {};
-    const labelToSymKey = {};
-    for (const [symKey, label] of Object.entries(map)) {
-      labelToSymKey[label.toLowerCase()] = symKey;
-    }
-
-    return rows.map(row => {
-      if (Array.isArray(row)) return row;
-      if (typeof row === 'object' && row !== null) {
-        return labels.map((label, offset) => {
-          const lowerLabel = label.toLowerCase();
-          
-          // 1. Try finding by symbolic key (e.g. row.effectiveTime)
-          const symKey = labelToSymKey[lowerLabel];
-          if (symKey !== undefined && row[symKey] !== undefined) {
-            return row[symKey];
-          }
-          
-          // 2. Try finding by literal label case-insensitively (e.g. row["effective_time"])
-          const foundKey = Object.keys(row).find(k => k.toLowerCase() === lowerLabel);
-          if (foundKey !== undefined) {
-            return row[foundKey];
-          }
-          
-          // 3. Try finding by symbolic key case-insensitively (e.g. row["effectivetime"])
-          if (symKey !== undefined) {
-            const symKeyLower = symKey.toLowerCase();
-            const foundSymKey = Object.keys(row).find(k => k.toLowerCase() === symKeyLower);
-            if (foundSymKey !== undefined) {
-              return row[foundSymKey];
-            }
-          }
-          
-          return "";
-        });
-      }
-      return row;
-    });
-  }
-
   addRows(newRows) {
-    const normalised = this.normaliseRows(newRows);
-    if (normalised.length > 0) {
-      this._persistAdd(normalised);
+    if (newRows && newRows.length > 0) {
+      this._persistAdd(newRows);
       this.clearCache();
       this._isHashed = false;
     }
   }
 
   updateRows(newRows) {
-    const normalised = this.normaliseRows(newRows);
-    if (normalised.length > 0) {
-      this._persistUpdate(normalised);
+    if (newRows && newRows.length > 0) {
+      this._persistUpdate(newRows);
       this.clearCache();
       this._isHashed = false;
     }

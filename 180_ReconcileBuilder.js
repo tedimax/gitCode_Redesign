@@ -27,25 +27,23 @@ class ReconcileBuilder extends UpdateTable {
    * @returns {Array}
    */
   _extractUnreconciledRows(mergedTable, existingTxMap) {
-    const mergedCols = mergedTable.getSymbolicOffsets();
-
     return mergedTable.getWindow()
       .map((row, offset) => ({ row, offset }))
-      .filter(({ row }) => !TypeUtils.isTrue(row[mergedCols.cleared]) && row[mergedCols.pk])
+      .filter(({ row }) => !TypeUtils.isTrue(row[mergedTable.column.cleared]) && row[mergedTable.column.pk])
       .map(({ row, offset }) => {
-        const pkStr = row[mergedCols.pk];
+        const pkStr = row[mergedTable.column.pk];
         return {
           rowOffset:   offset,
           PK:          pkStr,
           existingTx:  existingTxMap.get(pkStr) || "",
           identifiers: CONFIG_CONSTANTS.RECONCILE_IDENTIFIER_FIELDS
-                        .map(fieldName => row[mergedCols[fieldName]])
+                        .map(fieldName => row[mergedTable.column[fieldName]])
                         .map(id => (id || "").trim())
                         .filter(id => id !== ""),
-          entryType:   (row[mergedCols.entryType] || "").toUpperCase(),
-          account:     row[mergedCols.account] || "",
+          entryType:   (row[mergedTable.column.entrytype] || "").toUpperCase(),
+          account:     row[mergedTable.column.account] || "",
           prefix:      pkStr ? pkStr.split('#')[0] : "",
-          date:        row[mergedCols.date] || ""
+          date:        row[mergedTable.column.date] || ""
         };
       });
   }

@@ -46,16 +46,15 @@ const AuditUtils = (() => {
     try {
       groupsTable.fetch(groupsTable.firstDataRowIndex);
       const rows = groupsTable.getWindow();
-      const groupCols = groupsTable.getSymbolicOffsets();
-      const pkCol = groupCols.pk;
-      const groupCol = groupCols.group;
+      const pkCol = groupsTable.column.pk;
+      const groupCol = groupsTable.column.group;
 
-      if (pkCol !== -1 && groupCol !== -1) {
-        const amountCol = groupsTable.getColOffset("Amount");
-        const accountCol = groupsTable.getColOffset("Account");
-        const typeCol = groupsTable.getColOffset("Type") !== -1 ? groupsTable.getColOffset("Type") : groupsTable.getColOffset("EntryType");
-        const dateCol = groupsTable.getColOffset("Date");
-        const descCol = groupsTable.getColOffset("Description") !== -1 ? groupsTable.getColOffset("Description") : groupsTable.getColOffset("desc");
+      if (pkCol !== undefined && groupCol !== undefined) {
+        const amountCol = groupsTable.column.amount;
+        const accountCol = groupsTable.column.account;
+        const typeCol = groupsTable.column.type !== undefined ? groupsTable.column.type : groupsTable.column.entrytype;
+        const dateCol = groupsTable.column.date;
+        const descCol = groupsTable.column.description !== undefined ? groupsTable.column.description : groupsTable.column.desc;
 
         rows.forEach(row => {
           const groupVal = row[groupCol];

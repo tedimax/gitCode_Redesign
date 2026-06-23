@@ -41,7 +41,7 @@ class ImportTable extends UpdateTable {
     if (sourceSheets.length === 0) {
       throw new Error(`ImportTable transform error: No source sheets resolved for ${this.longName}`);
     }
-    
+
     myLog("info", "Driving Sources for %s: %s", this.longName, sourceSheets.map(s => s.longName).join(", "));
 
     // --- FAST PATH: Aligned Clone (Only for single-source sheets to preserve speed) ---
@@ -56,7 +56,7 @@ class ImportTable extends UpdateTable {
     const targetObjects = [];
     const seenPKs = new Map();
     const fyFieldName = "FY";
-    
+
     // Ledgers_GeneratedTransactions is excluded from 1:1 boundary checks here because its source sheet
     // (manualEntry_scheduled transactions) contains schedules. It is expanded to occurrences first
     // and filtered individually in GenerateTable.
@@ -68,7 +68,7 @@ class ImportTable extends UpdateTable {
     const finalMode = String(this._modeOverride || configMethod).toLowerCase();
     const isReplace = finalMode === "replace" || finalMode === "replacerows";
 
-    const seqCol = this.getColOffset("Sequence");
+    const seqCol = this.column.sequence;
     let nextSequence = 1;
     if (seqCol !== -1 && !isReplace) {
       let maxSeq = 0;
@@ -92,14 +92,14 @@ class ImportTable extends UpdateTable {
       if (entries.length > 1) {
         myLog("error", "TRAP DETECTED: PK '%s' is processed %d times in %s!", pk, entries.length, this.longName);
         entries.forEach((e, idx) => {
-          myLog("error", "  - Occurrence %d: Source sheet: %s | Source row offset: %d | Source PK: %s | Calc PK: %s", 
+          myLog("error", "  - Occurrence %d: Source sheet: %s | Source row offset: %d | Source PK: %s | Calc PK: %s",
             idx + 1, e.sourceName, e.rowOff, e.sourcePK, e.calcPK);
         });
       }
     });
 
     if (excludedCount > 0 && targetBoundaryFY) {
-      myLog("info", "ImportTable [Boundary Guard]: Excluded %d source rows preceding boundary FY %d", 
+      myLog("info", "ImportTable [Boundary Guard]: Excluded %d source rows preceding boundary FY %d",
         excludedCount, targetBoundaryFY);
     }
 
@@ -107,7 +107,7 @@ class ImportTable extends UpdateTable {
     this._injectGhostRows(targetObjects, targetBoundaryFY, fyFieldName, nextSeqObj);
 
     // 4. Serialize results
-    const newData = this._serializeObjectsToMatrix(targetObjects);
+    const newData = this._serializeRowObjectsToMatrix(targetObjects);
 
     myLog("info", "Transformation complete for %s. (Total: %d rows consolidated)", this.longName, targetObjects.length);
     return newData;
@@ -119,7 +119,7 @@ class ImportTable extends UpdateTable {
    *
    * @private
    */
-   _transformSourceSheet(sourceSheet, targetObjects, seenPKs, targetBoundaryFY, fyFieldName, nextSeqObj) {
+  _transformSourceSheet(sourceSheet, targetObjects, seenPKs, targetBoundaryFY, fyFieldName, nextSeqObj) {
     let excludedCount = 0;
     const context = FormulaUtils.createContext(sourceSheet, this);
     myLog("info", "Starting transformation engine for %s source: %s...", this.longName, sourceSheet.longName);
@@ -135,12 +135,12 @@ class ImportTable extends UpdateTable {
     // 2. Execute Phased Pipeline (Calculate -> Patch -> Filter)
     const sourceWindow = sourceSheet.getWindow();
     const sourceLen = sourceWindow.length;
-    
+
     for (let rowOff = 0; rowOff < sourceLen; rowOff++) {
       if (rowOff > 0 && rowOff % 500 === 0) {
         myLog("info", "Transform progress for %s -> %s: %d / %d rows processed...", this.longName, sourceSheet.longName, rowOff, sourceLen);
       }
-      
+
       const sourceRow = sourceWindow[rowOff];
       const calc = this._calculateRow(sourceRow, rowOff, context, executionPlan, sourceSheet);
       const patched = this._applyGlobalPatches(calc);
@@ -151,7 +151,7 @@ class ImportTable extends UpdateTable {
           rowOff,
           sourceName: sourceSheet.longName,
           calcPK: calc.PK,
-          sourcePK: sourceRow[sourceSheet.getColOffset("PK")] || sourceRow[sourceSheet.getColOffset("pk")] || "N/A"
+          sourcePK: sourceRow[sourceSheet.column.pk] || "N/A"
         };
         if (seenPKs.has(pkLower)) {
           seenPKs.get(pkLower).push(info);
@@ -185,23 +185,23 @@ class ImportTable extends UpdateTable {
         }
       }
 
-      const targetSeqCol = this.getColOffset("Sequence");
+      const targetSeqCol = this.column.sequence;
       if (targetSeqCol !== -1) {
-        if (patched.Sequence === undefined || patched.Sequence === null || patched.Sequence === "") {
-          const sourceSeqCol = sourceSheet.getColOffset("Sequence");
+        if (patched.sequence === undefined || patched.sequence === null || patched.sequence === "") {
+          const sourceSeqCol = sourceSheet.column.sequence;
           if (sourceSeqCol !== -1 && sourceRow[sourceSeqCol] !== undefined && sourceRow[sourceSeqCol] !== null && sourceRow[sourceSeqCol] !== "") {
-            patched.Sequence = Number(sourceRow[sourceSeqCol]);
+            patched.sequence = Number(sourceRow[sourceSeqCol]);
           } else if (nextSeqObj) {
-            patched.Sequence = nextSeqObj.val++;
+            patched.sequence = nextSeqObj.val++;
           }
         } else {
-          patched.Sequence = Number(patched.Sequence);
+          patched.sequence = Number(patched.sequence);
         }
       }
 
       targetObjects.push(patched);
     }
-    
+
     // Keep memory footprint low by flushing the source sheet cache
     sourceSheet.flushMemory();
 
@@ -235,7 +235,7 @@ class ImportTable extends UpdateTable {
 
       // A. Extract FY from standard FY field
       let ghostFYRaw = ghost[fyFieldName] || ghost.FY || ghost.fy;
-      
+
       // B. Fallback: Parse date from PK string if formatted as Table#YYYYMMDD and compute FY
       if (!ghostFYRaw && ghost.PK) {
         const pkStr = String(ghost.PK);
@@ -260,7 +260,7 @@ class ImportTable extends UpdateTable {
         const ghostFY = Number(ghostFYRaw);
         if (!isNaN(ghostFY) && ghostFY <= targetBoundaryFY) {
           excludedGhostCount++;
-          myLog("trace", "ImportTable [Boundary Guard]: Excluded ghost entry PK '%s' with FY %d (precedes boundary FY %d)", 
+          myLog("trace", "ImportTable [Boundary Guard]: Excluded ghost entry PK '%s' with FY %d (precedes boundary FY %d)",
             ghost.PK, ghostFY, targetBoundaryFY);
           return false;
         }
@@ -269,7 +269,7 @@ class ImportTable extends UpdateTable {
     });
 
     if (excludedGhostCount > 0 && targetBoundaryFY) {
-      myLog("info", "ImportTable [Boundary Guard]: Excluded %d ghost entries preceding boundary FY %d", 
+      myLog("info", "ImportTable [Boundary Guard]: Excluded %d ghost entries preceding boundary FY %d",
         excludedGhostCount, targetBoundaryFY);
     }
 
@@ -277,12 +277,12 @@ class ImportTable extends UpdateTable {
 
     myLog("info", "Injecting %d new manual entries (Ghost Rows) for %s", withinWindow.length, withinWindow.length);
     const labels = this.getLabels();
-    const targetSeqCol = this.getColOffset("Sequence");
-    
-     // 2. Process each eligible ghost row using only the cached active window map
+    const targetSeqCol = this.column.sequence;
+
+    // 2. Process each eligible ghost row using only the cached active window map
     withinWindow.forEach(ghost => {
       const ghostPKLower = String(ghost.PK).trim().toLowerCase();
-      
+
       const duplicateIdx = targetObjects.findIndex(obj => {
         const pk = obj.PK || obj.pk;
         return pk && String(pk).trim().toLowerCase() === ghostPKLower;
@@ -292,7 +292,7 @@ class ImportTable extends UpdateTable {
       }
 
       const existingRowOff = this.getHashKeyMap().get(ghostPKLower);
-      
+
       if (existingRowOff !== undefined) {
         // Case A: The ghost row key exists in our active write window.
         // Retrieve and merge fields, overwriting with ghost manual updates.
@@ -365,7 +365,7 @@ class ImportTable extends UpdateTable {
       if (fromFY !== null && !isNaN(fromFY) && fromFY > 0) {
         // The boundary guardrail excludes anything preceding this FY (i.e. <= fromFY - 1)
         const boundary = fromFY - 1;
-        myLog("info", "Target Window FY Boundary for %s: %d (Registry FromFY %d - 1)", 
+        myLog("info", "Target Window FY Boundary for %s: %d (Registry FromFY %d - 1)",
           this.longName, boundary, fromFY);
         return boundary;
       }
@@ -387,21 +387,21 @@ class ImportTable extends UpdateTable {
    */
   _executePlan(initialCalc, sourceRow, rowOff, context, plan, sourceSheet) {
     const sourceLabels = sourceSheet ? sourceSheet.getLabels() : [];
-    
+
     return plan.reduce((calc, step) => {
       const targetField = step.targetField;
-      
-      const rawResult = step.isSimple 
-        ? sourceRow[step.sourceIdx] 
+
+      const rawResult = step.isSimple
+        ? sourceRow[step.sourceIdx]
         : step.compiledFormula(rowOff, calc, context, context.props, sourceRow, sourceLabels);
-      
+
       const fieldType = Registry.getType(this.longName, targetField);
       const castVal = TypeUtils.castType(rawResult, fieldType);
-      
+
       // Border Guard: Perimeter Validation
       const physicalRow = rowOff + (sourceSheet._windowStartRow !== null ? sourceSheet._windowStartRow : (sourceSheet.firstDataRowIndex || 2));
       TypeUtils.validate(castVal, fieldType, { sheet: this.longName, row: physicalRow, col: targetField });
-      
+
       calc[targetField] = castVal;
       return calc;
     }, { ...initialCalc });
@@ -443,21 +443,58 @@ class ImportTable extends UpdateTable {
     const sourceLongName = sourceSheet.longName;
 
     // 1. Fetch and Resolve mapping rules
-    const targetFieldKey = CONFIG_CONSTANTS.FORMULAS_CONFIG_PK;
-    const formulaKey = "Formula";
-    
-    const parsedRules = Registry.getFormulasFor(this.longName)
-      .map(row => {
-        const targetField = row.targetField;
-        const formula = row.formula;
+    const parsedRules = this._fetchMappingRules();
+
+    // 2. Compile custom formulas
+    // What this does:
+    // - Takes the raw formula string (e.g. "[Amount] * -1") and parses it using FormulaUtils 
+    //   to convert bracketed column names into direct array index lookups (e.g. "sourceRow[5] * -1").
+    // - Wraps the parsed string inside a native Javascript Function constructor.
+    // - This creates a high-performance, pre-compiled JS executable function that can be run 
+    //   safely and instantly across thousands of rows without needing to parse strings at runtime.
+    // - Injects scope variables (rowOff, calc, utils, props, sourceRow, sourceLabels) for use in the formula.
+    const compiledEntries = this._compileCustomFormulas(parsedRules, sourceLongName);
+
+    // 3. Auto-fill missing targets with implicit defaults
+    // What this does:
+    // - Compares the explicitly compiled formulas against the physical column labels of this target sheet.
+    // - For any target column missing an explicit rule, it assumes a 1:1 mapping (e.g. formula = "[ColumnName]").
+    // - Contains specific fallback logic for "Sequence": if the source table doesn't have a sequence column, 
+    //   it maps it to an empty string '' to prevent execution errors.
+    // - Compiles these implicit rules identically to custom rules so the execution engine processes them uniformly.
+    const compiledFields = new Set(compiledEntries.compiled.map(([field]) => field));
+    const defaultEntries = this._compileDefaultFormulas(sourceLongName, compiledFields);
+
+    // Re-instantiate the maps functionally using the accumulated entry arrays
+    this._rawFormulaMap = new Map([...compiledEntries.raw, ...defaultEntries.raw]);
+    this._compiledFormulaMap = new Map([...compiledEntries.compiled, ...defaultEntries.compiled]);
+
+    // 4. Resolve filtering logic
+    // What this does:
+    // - Retrieves the 'NewFilter' property from the Registry for this table (e.g., "[Amount] > 0").
+    // - If a filter exists, it parses and compiles it into an executable Function, identically to standard formulas.
+    // - This compiled filter is evaluated at runtime during ingest: if it returns true, the row is imported; if false, it is dropped.
+    // - Extracts and stores the dependencies of the filter (e.g., if the filter relies on "[Amount]", it notes that "Amount" must be calculated first).
+    this._compileFilterLogic(sourceLongName);
+
+    // 5. Final Topological Sort
+    this._compiledFormulaMap = FormulaUtils.resolveDependencies(this._compiledFormulaMap, this._rawFormulaMap, this._filterDeps);
+  }
+
+  _fetchMappingRules() {
+    return Registry.getFormulasFor(this.longName)
+      .map(formulaRow => {
+        const targetField = formulaRow.targetField;
+        const formula = formulaRow.formula;
         if (!targetField) return null;
 
         return { targetField, formula };
       })
       .filter(rule => rule !== null);
+  }
 
-    // 2. Compile custom formulas
-    const compiledEntries = parsedRules.reduce((acc, { targetField, formula }) => {
+  _compileCustomFormulas(parsedRules, sourceLongName) {
+    return parsedRules.reduce((acc, { targetField, formula }) => {
       try {
         const parsedFormula = FormulaUtils.parse(formula, sourceLongName, targetField, this.longName);
         myLog("trace", "Formula Engine: Compiling %s -> %s", targetField, parsedFormula);
@@ -468,19 +505,28 @@ class ImportTable extends UpdateTable {
       }
       return acc;
     }, { raw: [], compiled: [] });
+  }
 
-    // 3. Auto-fill missing targets with implicit defaults
-    const compiledFields = new Set(compiledEntries.compiled.map(([field]) => field));
-    const defaultEntries = this.getLabels().reduce((acc, targetField) => {
+  _getDefaultFormulaForField(targetField, sourceLongName) {
+    if (targetField === "Sequence") {
+      const unionSheetName = Registry.getUnionNameFor(sourceLongName);
+      const sourceConfig = Registry.getSheetConfigBySheetName(unionSheetName, globals.activeSSID);
+      if (sourceConfig) {
+        const sourceSheet = new Table(globals.activeSS, sourceConfig.LongName, { ...sourceConfig, SheetType: "Table" });
+        const hasSourceSeq = sourceSheet && sourceSheet.column && sourceSheet.column.sequence !== undefined;
+        if (!hasSourceSeq) {
+          return "''";
+        }
+      }
+    }
+    return `[${targetField}]`;
+  }
+
+  _compileDefaultFormulas(sourceLongName, compiledFields) {
+    return this.getLabels().reduce((acc, targetField) => {
       if (!compiledFields.has(targetField)) {
         try {
-          let formula = `[${targetField}]`;
-          if (targetField === "Sequence") {
-            const hasSourceSeq = sourceSheet && typeof sourceSheet.getColOffset === 'function' && sourceSheet.getColOffset("Sequence") !== -1;
-            if (!hasSourceSeq) {
-              formula = "''";
-            }
-          }
+          const formula = this._getDefaultFormulaForField(targetField, sourceLongName);
           const parsedFormula = FormulaUtils.parse(formula, sourceLongName, targetField, this.longName);
           myLog("trace", "Formula Engine: Compiling Default %s -> %s", targetField, parsedFormula);
           acc.raw.push([targetField, formula]);
@@ -491,12 +537,9 @@ class ImportTable extends UpdateTable {
       }
       return acc;
     }, { raw: [], compiled: [] });
+  }
 
-    // Re-instantiate the maps functionally using the accumulated entry arrays
-    this._rawFormulaMap = new Map([...compiledEntries.raw, ...defaultEntries.raw]);
-    this._compiledFormulaMap = new Map([...compiledEntries.compiled, ...defaultEntries.compiled]);
-
-    // 4. Resolve filtering logic
+  _compileFilterLogic(sourceLongName) {
     const filterFormula = this.getProperty("NewFilter");
     this._compiledFilter = null;
     this._filterDeps = [];
@@ -506,13 +549,20 @@ class ImportTable extends UpdateTable {
       this._compiledFilter = new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return ' + parsedFilter);
       this._filterDeps = FormulaUtils.extractDependencies(filterFormula, "__FILTER__");
     }
-
-    // 5. Final Topological Sort
-    this._compiledFormulaMap = FormulaUtils.resolveDependencies(this._compiledFormulaMap, this._rawFormulaMap, this._filterDeps);
   }
 
   /**
    * Pre-calculates whether columns can be copied 1:1 to bypass the script engine.
+   * 
+   * What this does:
+   * - Scans all the raw mapping rules for this sheet.
+   * - Checks if a rule is just a simple column reference (e.g. formula="[Amount]").
+   * - If so, it pre-caches the physical integer array index of that source column.
+   * - This generates an "Execution Plan" array: it allows the ingest loop to use 
+   *   a lightning-fast direct array copy (`target[x] = source[y]`) for simple fields, 
+   *   completely bypassing the compiled Javascript Function overhead for those columns.
+   * - It also acts as a fail-fast structural check: if a simple 1:1 column is missing 
+   *   from the source table, it immediately aborts with a critical error before importing.
    */
   _buildExecutionPlan(sourceSheet) {
     const sourceLabels = sourceSheet.getLabels();
@@ -526,13 +576,12 @@ class ImportTable extends UpdateTable {
         const sourceLabel = match[1].trim();
         sourceIdx = sourceLabels.indexOf(sourceLabel);
         if (sourceIdx === -1) {
-          const colIdx = this.getColOffset(targetField);
-          const colNum = colIdx + 1;
-          const colLetter = StringUtils.columnToLetter(colIdx);
+          const colNum = this.column[targetField] + 1;
+          const colLetter = StringUtils.columnToLetter(this.column[targetField]);
           throw new Error(`CRITICAL MAPPING ERROR: Target field '${targetField}' (Column ${colLetter}/${colNum}) requires source column '[${sourceLabel}]', but it was not found in ${sourceSheet.longName}. Available source columns: [${sourceLabels.slice(0, 5).join(", ")}...]`);
         }
       }
-      
+
       return { targetField, isSimple: sourceIdx !== -1, sourceIdx, compiledFormula };
     });
   }
@@ -546,7 +595,7 @@ class ImportTable extends UpdateTable {
       myLog("info", "Fast Clone candidate %s rejected: NewFilter is configured. Falling back to full engine.", this.longName);
       return { success: false };
     }
-    
+
     // If we have complex formulas (non-bracket), we MUST use the full engine.
     const bracketRegex = /^\[[^\]]+\]$/;
     if (this._rawFormulaMap.size > 0 && !Array.from(this._rawFormulaMap.values()).every(f => bracketRegex.test(String(f).trim()))) {
@@ -567,9 +616,8 @@ class ImportTable extends UpdateTable {
     const missingIdx = sourceIndexMap.indexOf(-1);
     if (missingIdx !== -1) {
       const targetField = targetLabels[missingIdx];
-      const colIdx = this.getColOffset(targetField);
-      const colNum = colIdx + 1;
-      const colLetter = StringUtils.columnToLetter(colIdx);
+      const colNum = this.column[targetField] + 1;
+      const colLetter = StringUtils.columnToLetter(this.column[targetField]);
       myLog("info", "Fast Clone candidate %s rejected: missing source column for '%s' (Column ${colLetter}/${colNum}). Falling back to full engine.", this.longName, targetField);
       return { success: false };
     }
@@ -609,19 +657,19 @@ class ImportTable extends UpdateTable {
   // UTILITIES & CLEANUP
   // =========================================================================
 
-  _serializeObjectsToMatrix(objects) {
+  _serializeRowObjectsToMatrix(objects) {
     if (!Array.isArray(objects)) return [];
     const labels = this.getLabels();
     return objects.map(obj => {
       return labels.map(label => {
         let val = obj[label];
         const type = TypeUtils.getType(this.longName, label);
-        
+
         // If the field is missing (Ghost Row), get the correct default (0, "", etc.)
         if (val === undefined || val === null) {
           val = TypeUtils.castType(null, type);
         }
-        
+
         return TypeUtils.toSheetValue(val, type);
       });
     });

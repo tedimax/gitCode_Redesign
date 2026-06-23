@@ -10,8 +10,7 @@ const CONFIG_CONSTANTS = {
   DATATYPES_SHEET_NAME: "NewAccounts_DataTypes",
   FORMULAS_SHEET_NAME: "NewAccounts_NewFormulas",
   SHEETS_CONFIG_PK: "LongName",
-  DATATYPES_CONFIG_PK: "TargetField",
-  FORMULAS_CONFIG_PK: "TargetField",
+
   HISTORICAL_PREFIX_MAP: {
     "SqFee": "Ledgers_SquareFees",
     "SqPay": "Ledgers_SquarePayments",
@@ -26,6 +25,7 @@ const CONFIG_CONSTANTS = {
     "Hundred": "Ledgers_GeneratedTransactions"
   },
   SHEET_CHUNK_SIZE: 500,
+  LOCK_TIMEOUT_MS: 30000,
   CORRECTIONS_SHEET_NAME: "NewAccounts_Corrections",
   CORRECTIONS_CONFIG_PK: "GlobalID",
   DEFAULT_FIRST_ROW: 2,
@@ -145,118 +145,7 @@ const CONFIG_CONSTANTS = {
   }
 };
 
-/**
- * Symbolic Column Mapping
- * Keys are symbolic field names used in logic.
- * Values are literal column headers in the Google Sheet.
- * Indexed by the Long Name of the table.
- */
-const TABLE_COLUMN_MAP = {
-  [MERGED_TABLE_NAME]: {
-    amount: "Amount",
-    account: "Account",
-    cleared: "Cleared",
-    fy: "FY",
-    balance: "Balance",
-    lastBalance: "LastBalance",
-    pk: "PK",
-    category: "Category",
-    entryType: "EntryType",
-    fk: "FK",
-    depositId: "DepositID",
-    paymentId: "PaymentID",
-    group: "Group",
-    date: "Date"
-  },
-  "AnnualSummaries_Names": {
-    name: "Name",
-    type: "Type"
-  },
-  "Reconciliation_NewReconcile": {
-    pk: "PK",
-    transaction: "Transaction",
-    balanced: "Balanced",
-    transactionFY: "TransactionFY",
-    date: "Date"
-  },
-  "Reconciliation_NewGroups": {
-    pk: "PK",
-    group: "Group",
-    cleared: "Cleared",
-    fy: "FY"
-  },
-  "Reconciliation_Groups": {
-    pk: "PK",
-    group: "Group",
-    cleared: "Cleared",
-    fy: "FY"
-  },
-  "AnnualSummaries_NewReconcileLog": {
-    sheetName: "SheetName",
-    transactionId: "TransactionId",
-    groupId: "GroupId",
-    clearStatus: "ClearStatus"
-  },
-  "NewAccounts_ReconcileLog": {
-    sheetName: "SheetName",
-    transactionId: "TransactionId",
-    groupId: "GroupId",
-    clearStatus: "ClearStatus"
-  },
-  "NewAccounts_NewFormulas": {
-    targetField: "TargetField",
-    formula: "Formula"
-  },
-  "NewAccounts_Sheets": {
-    longName: "LongName",
-    keyPrefix: "KeyPrefix",
-    firstrow: "FirstRow",
-    labelrow: "LabelRow",
-    process: "Process" // The state-machine column for batch imports
-  },
-  // Definition for Schedule-driven generation
-  "ManualEntry_ScheduledTransactions": {
-    dateStart: "DateStart",
-    dateEnd: "DateEnd",
-    interval: "Interval",
-    unit: "Unit"
-  },
-  "Keys_SetmoreBookings": {
-    key: "Key",
-    start: "Start",
-    end: "End",
-    duration: "Duration",
-    email: "Email",
-    comment: "Comment",
-    customer: "Customer",
-    encryptedPin: "EncryptedPIN"
-  },
-  "Keys_TemporaryBookings": {
-    email: "Email",
-    encryptedPin: "EncryptedPIN",
-    start: "Start"
-  },
-  "Keys_TuyaLogs": {
-    id: "id",
-    updateTime: "update_time"
-  },
-  "Keys_TuyaTempPINS": {
-    id: "id",
-    effectiveTime: "effective_time",
-    invalidTime: "invalid_time",
-    deliveryStatus: "delivery_status",
-    phase: "phase"
-  },
-  "Keys_IssuedPINS": {
-    id: "id",
-    encryptedPin: "encryptedPIN",
-    name: "name",
-    appointmentTime: "appointment_time",
-    effectiveTime: "effective_time",
-    invalidTime: "invalid_time",
-    issued: "Issued"
-  }
-};
+
 
 /**
  * Styling Constants for Financial Reports

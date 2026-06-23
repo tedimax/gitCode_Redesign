@@ -16,8 +16,8 @@ const TypeUtils = {
     try {
       const instance = globals.sheetInstances[sheet];
       if (instance) {
-        const colIdx = instance.getColOffset(col);
-        if (colIdx !== -1) {
+        const colIdx = instance.column[col];
+        if (colIdx !== undefined) {
           return ` (Column ${StringUtils.columnToLetter(colIdx)}/${colIdx + 1})`;
         }
       }

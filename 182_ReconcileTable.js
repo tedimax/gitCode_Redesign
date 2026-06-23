@@ -54,7 +54,7 @@ class ReconcileTable extends ReconcileProcessor {
     this._resolveGroupRepresentatives(unreconciledRows, parentMap);
 
     // Filter out groups that are entirely before or at the FirstRow (previous FY)
-    const absoluteFirstRow = mergedTable.absoluteFirstRow;
+    const dataStartRow = mergedTable.dataStartRow;
     const firstDataRowIndex = mergedTable.firstDataRowIndex;
 
     const rowsByGroupRoot = new Map();
@@ -70,12 +70,12 @@ class ReconcileTable extends ReconcileProcessor {
     rowsByGroupRoot.forEach((rows, rootPK) => {
       const hasCurrentFYRow = rows.some(row => {
         const physicalRowIndex = firstDataRowIndex + row.rowOffset;
-        return !absoluteFirstRow || physicalRowIndex > absoluteFirstRow;
+        return !dataStartRow || physicalRowIndex > dataStartRow;
       });
       if (hasCurrentFYRow) {
         validGroupRoots.add(rootPK);
       } else {
-        myLog("info", "Reconcile: Rejecting group %s because all its rows are before or at the FirstRow (row %d).", rootPK, absoluteFirstRow);
+        myLog("info", "Reconcile: Rejecting group %s because all its rows are before or at the FirstRow (row %d).", rootPK, dataStartRow);
       }
     });
 
@@ -105,10 +105,10 @@ class ReconcileTable extends ReconcileProcessor {
    * @returns {Map<string, string>} PK -> Transaction ID
    */
   _loadExistingManualTxIds() {
-    const { pk, transaction: txId } = this.getSymbolicOffsets();
+    const { pk, transaction: txId } = this.column;
 
     // Guard clause: If columns aren't valid, throw an error
-    if (pk === -1 || txId === -1) {
+    if (pk === undefined || txId === undefined) {
       throw new Error("CRITICAL CONFIG ERROR: Required columns 'pk' or 'transaction' missing in Reconcile sheet.");
     }
 
@@ -278,7 +278,7 @@ class ReconcileTable extends ReconcileProcessor {
       const Constructor = globals.tableMap[type] || globals.tableMap['Table'];
       const ledger = new Constructor(ss, ledgerName, fullConfig);
 
-      if (ledger.getColOffset("Group") === -1) {
+      if (ledger.column.group === undefined) {
         throw new Error(`CRITICAL: Ledger '${ledgerName}' has no 'Group' column. Cannot write back reconciliation group ID.`);
       }
 

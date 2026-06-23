@@ -10,9 +10,8 @@ class AnnualLedger {
   constructor(sourceTable, namesTable) {
     this.sourceTable = sourceTable;
     this.namesTable = namesTable;
-    
-    this.sourceCols = sourceTable ? sourceTable.getSymbolicOffsets() : {};
-    this.nameCols = namesTable ? namesTable.getSymbolicOffsets() : {};
+    this.sourceCols = sourceTable ? sourceTable.column : {};
+    this.nameCols = namesTable ? namesTable.column : {};
 
     // Internal persistent state (The "Fact Store")
     this._cachedFacts = { 
@@ -112,7 +111,7 @@ class AnnualLedger {
       StringUtils.columnToLetter(this.sourceCols.account), 
       StringUtils.columnToLetter(this.sourceCols.amount), 
       StringUtils.columnToLetter(this.sourceCols.cleared),
-      StringUtils.columnToLetter(this.sourceCols.lastBalance),
+      StringUtils.columnToLetter(this.sourceCols.lastbalance),
       StringUtils.columnToLetter(this.sourceCols.balance));
 
     let isFinished = false;
@@ -157,7 +156,7 @@ class AnnualLedger {
         // We only stop the scan if we hit a CLEARED ACCOUNT row from an older year.
         const safetyBoundary = Number(prevFY) - 1;
         if (Number(rowFY) < safetyBoundary) {
-          const rowType = String(row[this.sourceCols.entryType] || "").trim().toUpperCase();
+          const rowType = String(row[this.sourceCols.entrytype] || "").trim().toUpperCase();
           const isCleared = (row[this.sourceCols.cleared] === true || String(row[this.sourceCols.cleared]).trim().toUpperCase() === "TRUE");
           if (rowType === "ACCOUNT" && isCleared) {
             myLog("info", "AnnualLedger: Reached safety boundary (%s) at cleared account row %d. Scan complete.", rowFY, pRow);
@@ -171,12 +170,12 @@ class AnnualLedger {
 
         // 4. Track resolution state (Continue scanning to catch out-of-order rows)
         const accName = row[this.sourceCols.account];
-        const type = (row[this.sourceCols.entryType] || "").toUpperCase();
+        const type = (row[this.sourceCols.entrytype] || "").toUpperCase();
 
         if (rowFY === targetFY) {
           targetAccounts.add(accName);
         } else if (rowFY === prevFY) {
-          const isLastBalance = row[this.sourceCols.lastBalance] === true || String(row[this.sourceCols.lastBalance]).trim().toUpperCase() === "TRUE";
+          const isLastBalance = row[this.sourceCols.lastbalance] === true || String(row[this.sourceCols.lastbalance]).trim().toUpperCase() === "TRUE";
           if (type === "ACCOUNT" && isLastBalance) {
             resolvedBalances.add(accName);
           }
@@ -201,7 +200,7 @@ class AnnualLedger {
    * Internal Core: Ingests a single row into the state.
    */
   _ingestRow(row, rowNum) {
-    const type = (row[this.sourceCols.entryType] || "").trim().toUpperCase();
+    const type = (row[this.sourceCols.entrytype] || "").trim().toUpperCase();
     const isCleared = (row[this.sourceCols.cleared] === true || String(row[this.sourceCols.cleared]).trim().toUpperCase() === "TRUE");
     let rowFY = String(row[this.sourceCols.fy] || "").trim();
     if (rowFY.length > 4) rowFY = rowFY.substring(0, 4);
@@ -292,7 +291,7 @@ class AnnualLedger {
     }
 
     if (type === "ACCOUNT") {
-      const isLastBalance = row[this.sourceCols.lastBalance] === true || String(row[this.sourceCols.lastBalance]).trim().toUpperCase() === "TRUE";
+      const isLastBalance = row[this.sourceCols.lastbalance] === true || String(row[this.sourceCols.lastbalance]).trim().toUpperCase() === "TRUE";
       const rawBal = row[this.sourceCols.balance];
 // Log suppressed for ACCOUNT rows
 

@@ -360,7 +360,7 @@ var FormulaUtils = {
     if (colOverride && typeof getSheetInstance !== 'undefined') {
       try {
         const instance = getSheetInstance(defaultSource);
-        if (instance && instance.getColOffset(colOverride) === -1) {
+        if (instance && instance.column[colOverride] === undefined) {
           // Column is missing from this sheet. Treat it as empty.
           return "''";
         }
@@ -617,7 +617,7 @@ var FormulaUtils = {
           }
           if ((valToTest === undefined || valToTest === "" || valToTest === null) && target && calc && calc.PK) {
             const existingRowOff = target.getHashKeyMap().get(String(calc.PK).trim().toLowerCase());
-            if (existingRowOff !== undefined && target.getColOffset(resolvedTestCol) !== -1) {
+            if (existingRowOff !== undefined && target.column[resolvedTestCol] !== undefined) {
               valToTest = target.getValueByLabel(existingRowOff, resolvedTestCol);
             }
           }
@@ -632,7 +632,7 @@ var FormulaUtils = {
             }
             if (target && calc && calc.PK) {
               const existingRowOff = target.getHashKeyMap().get(String(calc.PK).trim().toLowerCase());
-              if (existingRowOff !== undefined && target.getColOffset(resolvedTargetCol) !== -1) {
+              if (existingRowOff !== undefined && target.column[resolvedTargetCol] !== undefined) {
                 const ext = target.getValueByLabel(existingRowOff, resolvedTargetCol);
                 if (ext !== "" && ext !== null && ext !== undefined) {
                    return ext;
