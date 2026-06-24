@@ -118,13 +118,15 @@ class ReconcileRenderer {
 
     const formulas = {};
     const base = StringUtils.toRangeName(this.table.sheetName);
-    const mergedConfig = Registry.getSheetConfig(CONFIG_CONSTANTS.MERGED_TABLE_NAME);
-    const mergedSheetName = mergedConfig ? (mergedConfig.SheetName || "Merged") : "Merged";
-    const mergedBase = StringUtils.toRangeName(mergedSheetName);
+    
+    // Look up values against the much shorter Unchecked table instead of the Merged table
+    const uncheckedConfig = Registry.getSheetConfig("Reconciliation_UnChecked");
+    const uncheckedSheetName = uncheckedConfig ? (uncheckedConfig.SheetName || "Unchecked") : "Unchecked";
+    const uncheckedBase = StringUtils.toRangeName(uncheckedSheetName);
 
     // Dynamic Named Range Builders
-    const rng  = (col) => base      + StringUtils.toRangeName(col);
-    const mRng = (col) => mergedBase + StringUtils.toRangeName(col);
+    const rng  = (col) => base          + StringUtils.toRangeName(col);
+    const uRng = (col) => uncheckedBase + StringUtils.toRangeName(col);
 
     // Complex BYROW/MAP logic (using dynamically calculated named ranges)
     formulas["Balanced"]      = `=MAP(${rng("ActivitySum")}, ${rng("AccountSum")}, LAMBDA(activity, account, IF(AND(activity="", account=""), False, IF(AND(activity=account, activity<>0), TRUE, FALSE) ) ))`;
@@ -138,7 +140,7 @@ class ReconcileRenderer {
     // Lookup formulas
     const lookupCols = ["Date", "Amount", "Customer", "Description", "Category", "Account", "EntryType", "FK", "DepositID", "PaymentID"];
     lookupCols.forEach(col => {
-      formulas[col] = `=ARRAYFORMULA(IF(${rng("PK")}="","",XLOOKUP(${rng("PK")}, ${mRng("PK")}, ${mRng(col)}, "")))`;
+      formulas[col] = `=ARRAYFORMULA(IF(${rng("PK")}="","",XLOOKUP(${rng("PK")}, ${uRng("PK")}, ${uRng(col)}, "")))`;
     });
 
     const labels = this.table.getLabels();

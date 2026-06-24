@@ -285,34 +285,7 @@ var FormulaUtils = {
       sourceNames = [defaultSource];
     }
 
-    // Expand Union config sheets (like NewAccounts_Union) to get constituent sheet names
-    if (sourceNames.length === 1 && typeof getSheetInstance !== 'undefined') {
-      const name = sourceNames[0];
-      if (name.endsWith("_Union") || name === "NewAccounts_Union") {
-        try {
-          const unionSheet = getSheetInstance(name);
-          if (unionSheet) {
-            Sheet.prototype.fetch.call(unionSheet, unionSheet.firstDataRowIndex);
-            const configData = [...unionSheet._window];
-            unionSheet.clearCache();
-            
-            const sourceColOffset = unionSheet.getColOffset("Source");
-            if (sourceColOffset !== -1) {
-              const nestedNames = configData
-                .map(row => String(row[sourceColOffset] || "").trim())
-                .filter(n => n !== "");
-              if (nestedNames.length > 0) {
-                sourceNames = nestedNames;
-              }
-            }
-          }
-        } catch (e) {
-          // Fallback
-        }
-      }
-    }
-
-    // Resolve index matching the defaultSource (the sheet we are currently compiling for)
+    // 3. Resolve the column name for the current source sheet
     const currentSourceIdx = sourceNames.findIndex(name => {
       return name === defaultSource || 
              name.replace(/^ImportsArchive_|^Ledgers_/, "") === defaultSource.replace(/^ImportsArchive_|^Ledgers_/, "") ||

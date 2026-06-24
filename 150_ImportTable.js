@@ -509,14 +509,18 @@ class ImportTable extends UpdateTable {
 
   _getDefaultFormulaForField(targetField, sourceLongName) {
     if (targetField === "Sequence") {
-      const unionSheetName = Registry.getUnionNameFor(sourceLongName);
-      const sourceConfig = Registry.getSheetConfigBySheetName(unionSheetName, globals.activeSSID);
-      if (sourceConfig) {
-        const sourceSheet = new Table(globals.activeSS, sourceConfig.LongName, { ...sourceConfig, SheetType: "Table" });
-        const hasSourceSeq = sourceSheet && sourceSheet.column && sourceSheet.column.sequence !== undefined;
-        if (!hasSourceSeq) {
-          return "''";
+      try {
+        const sourceConfig = Registry.getSheetConfig(sourceLongName);
+        if (sourceConfig) {
+          const sourceSheet = new Table(globals.activeSS, sourceConfig.LongName, { ...sourceConfig, SheetType: "Table" });
+          const hasSourceSeq = sourceSheet && sourceSheet.column && sourceSheet.column.sequence !== undefined;
+          if (!hasSourceSeq) {
+            return "''";
+          }
         }
+      } catch (e) {
+        // Fallback to safely default to empty string if source cannot be resolved
+        return "''";
       }
     }
     return `[${targetField}]`;

@@ -71,37 +71,6 @@ const Utils = (() => {
     const explicitSource = tableInstance.getProperty("SourceSheets") || tableInstance.getProperty("SourceSheet");
     if (explicitSource) {
       const sourceNames = String(explicitSource).split(",").map(s => s.trim());
-      
-      // If there is only one source name, and it is a union configuration sheet
-      if (sourceNames.length === 1 && (sourceNames[0].endsWith("_Union") || sourceNames[0] === "NewAccounts_Union")) {
-        try {
-          const unionSheet = getSheetInstance(sourceNames[0]);
-          if (unionSheet) {
-            // Read the 'Source' column from the physical sheet
-            Sheet.prototype.fetch.call(unionSheet, unionSheet.firstDataRowIndex);
-            const configData = [...unionSheet._window];
-            unionSheet.clearCache();
-            
-            const sourceColOffset = unionSheet.column.source;
-            if (sourceColOffset !== undefined) {
-              const nestedSources = configData
-                .map(row => String(row[sourceColOffset] || "").trim())
-                .filter(name => name !== "")
-                .map(name => getSheetInstance(name))
-                .filter(Boolean);
-              
-              if (nestedSources.length > 0) {
-                myLog("info", "Resolved %d nested sources from Union sheet %s: %s", 
-                  nestedSources.length, sourceNames[0], nestedSources.map(s => s.longName).join(", "));
-                return nestedSources;
-              }
-            }
-          }
-        } catch (e) {
-          myLog("warn", "Failed to resolve nested sources from Union config sheet %s: %s", sourceNames[0], e.message);
-        }
-      }
-      
       return sourceNames.map(name => getSheetInstance(name)).filter(Boolean);
     }
 

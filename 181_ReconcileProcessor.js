@@ -62,9 +62,14 @@ class ReconcileProcessor extends ReconcileBuilder {
     const ss = getSpreadsheetInstance(ssid);
 
     const mergedTable = new Table(ss, CONFIG_CONSTANTS.MERGED_TABLE_NAME, physicalConfig);
+    
+    const uncheckedConfig = Registry.getSheetConfig("Reconciliation_UnChecked");
+    const uncheckedPhysicalConfig = { ...uncheckedConfig, SheetType: "Table", FirstRow: 2, firstrow: 2 };
+    const uncheckedTable = new Table(ss, "Reconciliation_UnChecked", uncheckedPhysicalConfig);
+
     const logTable = getSheetInstance("NewAccounts_ReconcileLog");
 
-    return { groupsTable, mergedTable, logTable };
+    return { groupsTable, mergedTable, uncheckedTable, logTable };
   }
 
   /**
@@ -75,10 +80,11 @@ class ReconcileProcessor extends ReconcileBuilder {
    * @param {Array} balancedTxs - Array of objects from _collectBalancedTransactions
    * @param {UpdateTable} groupsTable 
    * @param {Table} mergedTable 
+   * @param {Table} uncheckedTable 
    * @param {UpdateTable} logTable 
-   * * @returns {{ txsWithGlobalIds: Array, groupsNewData: Array, logNewData: Array, mergedBatches: Object }}
+   * * @returns {{ txsWithGlobalIds: Array, groupsNewData: Array, logNewData: Array, mergedBatches: Object, uncheckedBatches: Object }}
    */
-  _stageGroupUpdates(balancedTxs, groupsTable, mergedTable, logTable) {
+  _stageGroupUpdates(balancedTxs, groupsTable, mergedTable, uncheckedTable, logTable) {
     // 1. Assign auto-incrementing Global Group IDs
     const nextGroupId = this._calculateNextGlobalGroupId(groupsTable);
     const txsWithGlobalIds = this._assignGlobalGroupIds(balancedTxs, nextGroupId);
@@ -87,10 +93,11 @@ class ReconcileProcessor extends ReconcileBuilder {
     const groupsNewData = this._buildGroupsTableRows(txsWithGlobalIds, groupsTable, mergedTable);
     const logNewData = this._buildReconcileLogRows(txsWithGlobalIds, logTable);
 
-    // 3. Accumulate logical batch updates for the Merged sheet
+    // 3. Accumulate logical batch updates for the Merged sheet and Unchecked sheet
     const mergedBatches = this._buildMergedTableBatchUpdates(txsWithGlobalIds, mergedTable);
+    const uncheckedBatches = this._buildUncheckedTableBatchUpdates(txsWithGlobalIds, uncheckedTable);
 
-    return { txsWithGlobalIds, groupsNewData, logNewData, mergedBatches };
+    return { txsWithGlobalIds, groupsNewData, logNewData, mergedBatches, uncheckedBatches };
   }
 
   /**
@@ -241,6 +248,56 @@ class ReconcileProcessor extends ReconcileBuilder {
     });
     batchUpdates.fyOffsetsByVal.forEach((offsets, fyVal) => {
       mergedTable.setValueByLabelAndRowOffsets("FY", fyVal, offsets);
+    });
+  }
+
+  /**
+   * Accumulates Google Sheets A1 notations into batches for bulk updating the Unchecked sheet.
+   * This mirrors the logic of _buildMergedTableBatchUpdates.
+   * 
+   * @param {Array} txsWithGlobalIds - Array of enriched transaction objects
+   * @param {Table} uncheckedTable
+   * @returns {{ clearedOffsets: number[], groupsOffsetsByVal: Map<number, number[]>, fyOffsetsByVal: Map<string, number[]> }}
+   */
+  _buildUncheckedTableBatchUpdates(txsWithGlobalIds, uncheckedTable) {
+    return txsWithGlobalIds.reduce((groupedOffsets, tx) => {
+      const uncheckedRowOffset = uncheckedTable.getRowOffsetFromKey(tx.PK);
+      if (uncheckedRowOffset !== undefined) {
+        // Every balanced transaction gets its 'Cleared' checkbox set to TRUE in the Unchecked sheet.
+        groupedOffsets.clearedOffsets.push(uncheckedRowOffset);
+
+        const groupsExistingOffsets = groupedOffsets.groupsOffsetsByVal.get(tx.GlobalGroupID) || [];
+        groupedOffsets.groupsOffsetsByVal.set(tx.GlobalGroupID, [...groupsExistingOffsets, uncheckedRowOffset]);
+
+        if (tx.FY) {
+          const fyExistingOffsets = groupedOffsets.fyOffsetsByVal.get(tx.FY) || [];
+          groupedOffsets.fyOffsetsByVal.set(tx.FY, [...fyExistingOffsets, uncheckedRowOffset]);
+        }
+      }
+      return groupedOffsets;
+    }, {
+      clearedOffsets: [],
+      groupsOffsetsByVal: new Map(),
+      fyOffsetsByVal: new Map()
+    });
+  }
+
+  /**
+   * Executes the accumulated batch updates against the Unchecked sheet using the Logical Layer.
+   * Applies the 'cleared' boolean, group IDs, and FY values in bulk.
+   * 
+   * @param {Table} uncheckedTable
+   * @param {Object} batchUpdates - The accumulated row offset batches
+   */
+  _executeUncheckedTableBatchUpdates(uncheckedTable, batchUpdates) {
+    if (batchUpdates.clearedOffsets.length > 0) {
+      uncheckedTable.setValueByLabelAndRowOffsets("Cleared", true, batchUpdates.clearedOffsets);
+    }
+    batchUpdates.groupsOffsetsByVal.forEach((offsets, groupId) => {
+      uncheckedTable.setValueByLabelAndRowOffsets("Group", groupId, offsets);
+    });
+    batchUpdates.fyOffsetsByVal.forEach((offsets, fyVal) => {
+      uncheckedTable.setValueByLabelAndRowOffsets("FY", fyVal, offsets);
     });
   }
 

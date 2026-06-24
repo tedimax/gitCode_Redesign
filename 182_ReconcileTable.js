@@ -38,9 +38,9 @@ class ReconcileTable extends ReconcileProcessor {
     // 1. Load existing manual Transaction IDs from the Reconcile sheet
     const existingTxMap = this._loadExistingManualTxIds();
 
-    // 2. Extract unreconciled rows from Merged sheet
-    const mergedTable = getSheetInstance(CONFIG_CONSTANTS.MERGED_TABLE_NAME);
-    const unreconciledRows = this._extractUnreconciledRows(mergedTable, existingTxMap);
+    // 2. Extract unreconciled rows from Unchecked sheet instead of Merged for performance
+    const uncheckedTable = getSheetInstance("Reconciliation_UnChecked");
+    const unreconciledRows = this._extractUnreconciledRows(uncheckedTable, existingTxMap);
 
     if (unreconciledRows.length === 0) {
       myLog("info", "No unreconciled rows found in Merged table.");
@@ -54,8 +54,8 @@ class ReconcileTable extends ReconcileProcessor {
     this._resolveGroupRepresentatives(unreconciledRows, parentMap);
 
     // Filter out groups that are entirely before or at the FirstRow (previous FY)
-    const dataStartRow = mergedTable.dataStartRow;
-    const firstDataRowIndex = mergedTable.firstDataRowIndex;
+    const dataStartRow = uncheckedTable.dataStartRow;
+    const firstDataRowIndex = uncheckedTable.firstDataRowIndex;
 
     const rowsByGroupRoot = new Map();
     unreconciledRows.forEach(row => {
@@ -196,10 +196,10 @@ class ReconcileTable extends ReconcileProcessor {
     // PHASE 1: PREPARATION & VALIDATION (No mutations)
     // ==========================================
     // 2. Pre-fetch all destination tables BEFORE any mutations
-    const { groupsTable, mergedTable, logTable } = this._prefetchDestinationTables();
+    const { groupsTable, mergedTable, uncheckedTable, logTable } = this._prefetchDestinationTables();
 
-    // 3. Stage updates for Merged, Groups, and Log tables
-    const { txsWithGlobalIds, groupsNewData, logNewData, mergedBatches } = this._stageGroupUpdates(balancedTxs, groupsTable, mergedTable, logTable);
+    // 3. Stage updates for Merged, Groups, Unchecked, and Log tables
+    const { txsWithGlobalIds, groupsNewData, logNewData, mergedBatches, uncheckedBatches } = this._stageGroupUpdates(balancedTxs, groupsTable, mergedTable, uncheckedTable, logTable);
 
     // 4. Stage updates for originating Ledgers
     const ledgerBatches = this._stageLedgerUpdates(txsWithGlobalIds);
@@ -210,6 +210,7 @@ class ReconcileTable extends ReconcileProcessor {
     // If execution reaches here, all logic and lookup validations have passed.
     
     this._executeMergedTableBatchUpdates(mergedTable, mergedBatches);
+    this._executeUncheckedTableBatchUpdates(uncheckedTable, uncheckedBatches);
     this._executeLedgerBatchUpdates(ledgerBatches);
 
     // 5. Persist staged rows to Groups and ReconcileLog
@@ -232,6 +233,7 @@ class ReconcileTable extends ReconcileProcessor {
     // 6. Clear caches to force a fresh fetch from Google Sheets
     this.clearCache();
     mergedTable.clearCache();
+    uncheckedTable.clearCache();
 
     // 7. Re-render the Reconcile sheet cleanly, fully compacted
     myLog("info", "Balanced rows committed. Re-building the Reconcile sheet to compact it.");

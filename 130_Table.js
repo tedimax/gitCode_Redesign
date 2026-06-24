@@ -518,8 +518,12 @@ class Table extends Sheet {
     return this._hashKeyMap;
   }
 
-  getRowOffsetFromKey(key) {
+  getRowOffset(key) {
     return this.getHashKeyMap().get(String(key).trim().toLowerCase());
+  }
+
+  getRowOffsetFromKey(key) {
+    return this.getRowOffset(key);
   }
 
   /**
