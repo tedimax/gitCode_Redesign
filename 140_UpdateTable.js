@@ -155,23 +155,14 @@ class UpdateTable extends Table {
     if (numRows > 0 && numCols > 0) {
       const range = this.sheet.getRange(this.firstDataRowIndex, 1, numRows, numCols);
 
-      // Build a stable sort spec: primary = SortField, secondary = Sequence (or PK if Sequence is not present)
-      // (preserves source order for rows that share the same date, e.g. two balance snapshots on 31 Mar).
+      // Build a stable sort spec: primary = SortField, secondary = PK
       const sortSpec = [{ column: physicalCol, ascending: true }];
-      const sequence = this.column.sequence;
-
-      if (sequence !== undefined && !Number.isNaN(sequence) && sequence !== -1 && sequence + 1 !== physicalCol) {
-        sortSpec.push({ column: sequence + 1, ascending: true });
-        range.sort(sortSpec);
-        myLog("info", "Sorted %s by %s (Col %d) + Sequence tiebreak (Col %d)", this.longName, sortField, physicalCol, sequence + 1);
-      } else {
-        const keyOffset = this.column[this.getProperty("Key")];
-        if (keyOffset !== -1 && keyOffset + 1 !== physicalCol) {
-          sortSpec.push({ column: keyOffset + 1, ascending: true });
-        }
-        range.sort(sortSpec);
-        myLog("info", "Sorted %s by %s (Col %d) + PK tiebreak", this.longName, sortField, physicalCol);
+      const keyOffset = this.column[this.getProperty("Key")];
+      if (keyOffset !== -1 && keyOffset + 1 !== physicalCol) {
+        sortSpec.push({ column: keyOffset + 1, ascending: true });
       }
+      range.sort(sortSpec);
+      myLog("info", "Sorted %s by %s (Col %d) + PK tiebreak", this.longName, sortField, physicalCol);
     }
   }
 
@@ -290,11 +281,6 @@ class UpdateTable extends Table {
 
         // Scan each column to determine if any field values have changed (is dirty)
         const isDirty = newRow.some((newVal, colOff) => {
-          const columnName = labels[colOff];
-          if (columnName && columnName.toLowerCase() === "sequence") {
-            return false;
-          }
-
           const fieldType = fieldTypes[colOff];
 
           // Normalize both values using the defined schema type for the column

@@ -68,23 +68,8 @@ class ImportTable extends UpdateTable {
     const finalMode = String(this._modeOverride || configMethod).toLowerCase();
     const isReplace = finalMode === "replace" || finalMode === "replacerows";
 
-    const seqCol = this.column.sequence;
-    let nextSequence = 1;
-    if (seqCol !== -1 && !isReplace) {
-      let maxSeq = 0;
-      this.getWindow().forEach(row => {
-        const val = Number(row[seqCol]);
-        if (!isNaN(val) && val > maxSeq) {
-          maxSeq = val;
-        }
-      });
-      nextSequence = maxSeq + 1;
-      myLog("info", "ImportTable: Found max Sequence %d in window of %s. Next sequence: %d", maxSeq, this.longName, nextSequence);
-    }
-    const nextSeqObj = { val: nextSequence };
-
     const excludedCount = sourceSheets.reduce((acc, sourceSheet) => {
-      return acc + this._transformSourceSheet(sourceSheet, targetObjects, seenPKs, targetBoundaryFY, fyFieldName, nextSeqObj);
+      return acc + this._transformSourceSheet(sourceSheet, targetObjects, seenPKs, targetBoundaryFY, fyFieldName);
     }, 0);
 
     // Print duplicate traps report
@@ -104,7 +89,7 @@ class ImportTable extends UpdateTable {
     }
 
     // 3. Injection (Ghost Rows)
-    this._injectGhostRows(targetObjects, targetBoundaryFY, fyFieldName, nextSeqObj);
+    this._injectGhostRows(targetObjects, targetBoundaryFY, fyFieldName);
 
     // 4. Serialize results
     const newData = this._serializeRowObjectsToMatrix(targetObjects);
@@ -119,7 +104,7 @@ class ImportTable extends UpdateTable {
    *
    * @private
    */
-  _transformSourceSheet(sourceSheet, targetObjects, seenPKs, targetBoundaryFY, fyFieldName, nextSeqObj) {
+  _transformSourceSheet(sourceSheet, targetObjects, seenPKs, targetBoundaryFY, fyFieldName) {
     let excludedCount = 0;
     const context = FormulaUtils.createContext(sourceSheet, this);
     myLog("info", "Starting transformation engine for %s source: %s...", this.longName, sourceSheet.longName);
@@ -185,20 +170,6 @@ class ImportTable extends UpdateTable {
         }
       }
 
-      const targetSeqCol = this.column.sequence;
-      if (targetSeqCol !== -1) {
-        if (patched.sequence === undefined || patched.sequence === null || patched.sequence === "") {
-          const sourceSeqCol = sourceSheet.column.sequence;
-          if (sourceSeqCol !== -1 && sourceRow[sourceSeqCol] !== undefined && sourceRow[sourceSeqCol] !== null && sourceRow[sourceSeqCol] !== "") {
-            patched.sequence = Number(sourceRow[sourceSeqCol]);
-          } else if (nextSeqObj) {
-            patched.sequence = nextSeqObj.val++;
-          }
-        } else {
-          patched.sequence = Number(patched.sequence);
-        }
-      }
-
       targetObjects.push(patched);
     }
 
@@ -220,7 +191,7 @@ class ImportTable extends UpdateTable {
    * @param {string} fyFieldName - The field name of the FY column.
    * @private
    */
-  _injectGhostRows(targetObjects, targetBoundaryFY, fyFieldName = "FY", nextSeqObj) {
+  _injectGhostRows(targetObjects, targetBoundaryFY, fyFieldName = "FY") {
     if (typeof PatchManager === 'undefined') return;
 
     // Retrieve unused patches for this table (meaning patches not matched to active source records)
@@ -277,7 +248,6 @@ class ImportTable extends UpdateTable {
 
     myLog("info", "Injecting %d new manual entries (Ghost Rows) for %s", withinWindow.length, withinWindow.length);
     const labels = this.getLabels();
-    const targetSeqCol = this.column.sequence;
 
     // 2. Process each eligible ghost row using only the cached active window map
     withinWindow.forEach(ghost => {
@@ -302,27 +272,9 @@ class ImportTable extends UpdateTable {
           return obj;
         }, {});
         const mergedObj = Object.assign({}, existingObj, ghost);
-        if (targetSeqCol !== -1) {
-          if (mergedObj.Sequence === undefined || mergedObj.Sequence === null || mergedObj.Sequence === "") {
-            if (nextSeqObj) {
-              mergedObj.Sequence = nextSeqObj.val++;
-            }
-          } else {
-            mergedObj.Sequence = Number(mergedObj.Sequence);
-          }
-        }
         targetObjects.push(mergedObj);
       } else {
         // Case B: Truly new manual transaction within this window. Insert it directly.
-        if (targetSeqCol !== -1) {
-          if (ghost.Sequence === undefined || ghost.Sequence === null || ghost.Sequence === "") {
-            if (nextSeqObj) {
-              ghost.Sequence = nextSeqObj.val++;
-            }
-          } else {
-            ghost.Sequence = Number(ghost.Sequence);
-          }
-        }
         targetObjects.push(ghost);
       }
     });
@@ -459,8 +411,6 @@ class ImportTable extends UpdateTable {
     // What this does:
     // - Compares the explicitly compiled formulas against the physical column labels of this target sheet.
     // - For any target column missing an explicit rule, it assumes a 1:1 mapping (e.g. formula = "[ColumnName]").
-    // - Contains specific fallback logic for "Sequence": if the source table doesn't have a sequence column, 
-    //   it maps it to an empty string '' to prevent execution errors.
     // - Compiles these implicit rules identically to custom rules so the execution engine processes them uniformly.
     const compiledFields = new Set(compiledEntries.compiled.map(([field]) => field));
     const defaultEntries = this._compileDefaultFormulas(sourceLongName, compiledFields);
@@ -508,21 +458,6 @@ class ImportTable extends UpdateTable {
   }
 
   _getDefaultFormulaForField(targetField, sourceLongName) {
-    if (targetField === "Sequence") {
-      try {
-        const sourceConfig = Registry.getSheetConfig(sourceLongName);
-        if (sourceConfig) {
-          const sourceSheet = new Table(globals.activeSS, sourceConfig.LongName, { ...sourceConfig, SheetType: "Table" });
-          const hasSourceSeq = sourceSheet && sourceSheet.column && sourceSheet.column.sequence !== undefined;
-          if (!hasSourceSeq) {
-            return "''";
-          }
-        }
-      } catch (e) {
-        // Fallback to safely default to empty string if source cannot be resolved
-        return "''";
-      }
-    }
     return `[${targetField}]`;
   }
 
