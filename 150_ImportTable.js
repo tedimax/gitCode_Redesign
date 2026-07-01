@@ -56,6 +56,7 @@ class ImportTable extends UpdateTable {
     const targetObjects = [];
     const seenPKs = new Map();
     const fyFieldName = "FY";
+    const loadedSourceYears = new Set();
 
     // Ledgers_GeneratedTransactions is excluded from 1:1 boundary checks here because its source sheet
     // (manualEntry_scheduled transactions) contains schedules. It is expanded to occurrences first
@@ -69,7 +70,7 @@ class ImportTable extends UpdateTable {
     const isReplace = finalMode === "replace" || finalMode === "replacerows";
 
     const excludedCount = sourceSheets.reduce((acc, sourceSheet) => {
-      return acc + this._transformSourceSheet(sourceSheet, targetObjects, seenPKs, targetBoundaryFY, fyFieldName);
+      return acc + this._transformSourceSheet(sourceSheet, targetObjects, seenPKs, targetBoundaryFY, fyFieldName, loadedSourceYears);
     }, 0);
 
     // Print duplicate traps report
@@ -89,7 +90,7 @@ class ImportTable extends UpdateTable {
     }
 
     // 3. Injection (Ghost Rows)
-    this._injectGhostRows(targetObjects, targetBoundaryFY, fyFieldName);
+    this._injectGhostRows(targetObjects, targetBoundaryFY, fyFieldName, loadedSourceYears);
 
     // 4. Serialize results
     const newData = this._serializeRowObjectsToMatrix(targetObjects);
@@ -104,7 +105,7 @@ class ImportTable extends UpdateTable {
    *
    * @private
    */
-  _transformSourceSheet(sourceSheet, targetObjects, seenPKs, targetBoundaryFY, fyFieldName) {
+  _transformSourceSheet(sourceSheet, targetObjects, seenPKs, targetBoundaryFY, fyFieldName, loadedSourceYears) {
     let excludedCount = 0;
     const context = FormulaUtils.createContext(sourceSheet, this);
     myLog("info", "Starting transformation engine for %s source: %s...", this.longName, sourceSheet.longName);
@@ -170,6 +171,15 @@ class ImportTable extends UpdateTable {
         }
       }
 
+      // Collect the FY of this loaded source row
+      const calcFYRaw = patched[fyFieldName] || patched.FY || patched.fy;
+      if (calcFYRaw !== undefined && calcFYRaw !== null && calcFYRaw !== "") {
+        const calcFY = Number(calcFYRaw);
+        if (!isNaN(calcFY)) {
+          loadedSourceYears.add(calcFY);
+        }
+      }
+
       targetObjects.push(patched);
     }
 
@@ -189,9 +199,10 @@ class ImportTable extends UpdateTable {
    * @param {Array<Object>} targetObjects - The collection of calculated row objects.
    * @param {number|null} targetBoundaryFY - The boundary FY threshold to exclude historical records.
    * @param {string} fyFieldName - The field name of the FY column.
+   * @param {Set<number>} loadedSourceYears - The set of years for which source rows have been loaded/processed.
    * @private
    */
-  _injectGhostRows(targetObjects, targetBoundaryFY, fyFieldName = "FY") {
+  _injectGhostRows(targetObjects, targetBoundaryFY, fyFieldName = "FY", loadedSourceYears) {
     if (typeof PatchManager === 'undefined') return;
 
     // Retrieve unused patches for this table (meaning patches not matched to active source records)
@@ -200,17 +211,15 @@ class ImportTable extends UpdateTable {
 
     let excludedGhostCount = 0;
 
-    // 1. Filter out ghost entries that fall before the boundary FY window
+    // 1. Filter out ghost entries that fall before the previous year (targetBoundaryFY - 1)
     const withinWindow = unused.filter(ghost => {
-      if (!targetBoundaryFY) return true;
-
       // A. Extract FY from standard FY field
       let ghostFYRaw = ghost[fyFieldName] || ghost.FY || ghost.fy;
 
       // B. Fallback: Parse date from PK string if formatted as Table#YYYYMMDD and compute FY
       if (!ghostFYRaw && ghost.PK) {
         const pkStr = String(ghost.PK);
-        const dateMatch = pkStr.match(/#(\d{8})(_|$)/) || pkStr.match(/#(\d{4}-\d{2}-\d{2})(_|$)/);
+        const dateMatch = pkStr.match(/#(\d{8})/) || pkStr.match(/#(\d{4}-\d{2}-\d{2})/);
         if (dateMatch) {
           const rawDatePart = dateMatch[1];
           let y, m;
@@ -229,24 +238,27 @@ class ImportTable extends UpdateTable {
 
       if (ghostFYRaw !== undefined && ghostFYRaw !== null && ghostFYRaw !== "") {
         const ghostFY = Number(ghostFYRaw);
-        if (!isNaN(ghostFY) && ghostFY <= targetBoundaryFY) {
-          excludedGhostCount++;
-          myLog("trace", "ImportTable [Boundary Guard]: Excluded ghost entry PK '%s' with FY %d (precedes boundary FY %d)",
-            ghost.PK, ghostFY, targetBoundaryFY);
-          return false;
+        if (!isNaN(ghostFY)) {
+          // Litmus Test: The ghost row must lie in a year for which we have loaded/processed source rows
+          if (loadedSourceYears && !loadedSourceYears.has(ghostFY)) {
+            excludedGhostCount++;
+            myLog("trace", "ImportTable [Boundary Guard]: Excluded ghost entry PK '%s' with FY %d (precedes active source window or source not loaded)",
+              ghost.PK, ghostFY);
+            return false;
+          }
         }
       }
       return true;
     });
 
-    if (excludedGhostCount > 0 && targetBoundaryFY) {
-      myLog("info", "ImportTable [Boundary Guard]: Excluded %d ghost entries preceding boundary FY %d",
-        excludedGhostCount, targetBoundaryFY);
+    if (excludedGhostCount > 0) {
+      myLog("info", "ImportTable [Boundary Guard]: Excluded %d ghost entries (source not loaded for those years)",
+        excludedGhostCount);
     }
 
     if (withinWindow.length === 0) return;
 
-    myLog("info", "Injecting %d new manual entries (Ghost Rows) for %s", withinWindow.length, withinWindow.length);
+    myLog("info", "Injecting %d new manual entries (Ghost Rows) for %s", withinWindow.length, this.longName);
     const labels = this.getLabels();
 
     // 2. Process each eligible ghost row using only the cached active window map
@@ -275,6 +287,7 @@ class ImportTable extends UpdateTable {
         targetObjects.push(mergedObj);
       } else {
         // Case B: Truly new manual transaction within this window. Insert it directly.
+        myLog("info", "ImportTable: Injecting new ghost row (PK: %s) with values: %s", ghost.PK, JSON.stringify(ghost));
         targetObjects.push(ghost);
       }
     });

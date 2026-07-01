@@ -177,18 +177,17 @@ In your spreadsheet registry `NewAccounts_Sheets`, the `"Key"` column for `"Reco
 ### Action Required
 * Open your `NewAccounts_Sheets` configuration tab and change the value in the **Key** column for the **Reconciliation_Merged** row from `Group` to **`PK`** to align the sheet configuration with the logical architecture. This allows the generic engine to correctly compare and update rows using their unique transaction keys.
 
-## Sequence Column stable sorting
+## Date and PK Stable Sorting (Sequence Removed)
 
-We have implemented a sequence number-based stable sorting mechanism to guarantee deterministic sorting on matching dates and ensure `LastBalance` selects the correct row.
+To prevent sorting inconsistencies and ensure that `LastBalance` always selects the correct authoritative row when dates match, the system was refined to eliminate the artificial `Sequence` column entirely. Instead, all sheets and in-memory caches are sorted deterministically using a native composite sort key: **Date** (primary) and **PK** (secondary tiebreaker).
 
-### Changes Made:
-1. **Dynamic Sequence Number Allocation on Ingestion**:
-   - Modified `transform()` in [150_ImportTable.js](file:///d:/Users/Peter/Documents/VillageHallCode/gitCode_Redesign/150_ImportTable.js) to retrieve the maximum sequence number in the active window (`this.getWindow()`) for `update` imports, starting at `1` for full `replace` imports.
-   - Updated `_transformSourceSheet` and `_injectGhostRows` in [150_ImportTable.js](file:///d:/Users/Peter/Documents/VillageHallCode/gitCode_Redesign/150_ImportTable.js) to allocate sequence numbers dynamically. If a source row contains a `Sequence` column (e.g. Ledgers), its value is copied directly to preserve source sequence, else it gets allocated the next sequential number.
-2. **Stable Sorting via Sequence**:
-   - Updated `sortData()` in [140_UpdateTable.js](file:///d:/Users/Peter/Documents/VillageHallCode/gitCode_Redesign/140_UpdateTable.js) to check for a physical `Sequence` column. If present, it uses `Sequence` ascending as the secondary sort tiebreaker instead of `pk`.
-3. **Deterministic `isLast` Evaluation**:
-   - Updated `isLast` cache builder inside [245_FormulaUtils.js](file:///d:/Users/Peter/Documents/VillageHallCode/gitCode_Redesign/245_FormulaUtils.js) to sort by `Sequence` ascending if the target table or driver has a `Sequence` column.
+### Changes and Refinements:
+1. **Removed Sequence Column Overhead**:
+   - Cleaned up the ingestion code to avoid allocating and tracking dynamic sequence numbers. This simplifies both physical sheets and the in-memory transform pipeline.
+2. **Stable Physical Sorting by Date + PK**:
+   - Refined `sortData()` in [140_UpdateTable.js](file:///d:/Users/Peter/Documents/VillageHallCode/gitCode_Redesign/140_UpdateTable.js) to build a stable sort specification where `SortField` (Date) is the primary sort key, and the table's `Key` (PK) is automatically appended as the secondary ascending tiebreaker to guarantee a deterministic physical layout on the sheet.
+3. **Consistent in-Memory `isLast` Evaluation**:
+   - Refined the `isLast` cache builder inside [245_FormulaUtils.js](file:///d:/Users/Peter/Documents/VillageHallCode/gitCode_Redesign/245_FormulaUtils.js) to replicate this exact sort order. If there is a tie on the date column, the rows are sorted alphabetically by their unique `PK` string to ensure the in-memory model matches the sheet's physical order. This ensures `LastBalance` evaluates deterministically and is never altered by a change in sort order.
 
 ## Dynamic UI Toast Progress Messages
 

@@ -144,7 +144,7 @@ function _calculateAndSaveWindow(longName, year) {
       lastRow = table.sheet.getLastRow();
     } else {
       const targetDate = new Date(year - 1, 3, 1); // 1st April (Start of the Financial Year)
-      const dateFieldName = table.getDateFieldName();
+      const dateFieldName = table.getProperty("DateField");
       let calculatedFirstRow = table.calculateFirstRowByDate(targetDate, dateFieldName);
       lastRow = table.sheet.getLastRow();
       // Set the first row to the last row that is dated before the FY (the row immediately preceding the first row of the FY)

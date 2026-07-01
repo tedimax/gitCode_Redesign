@@ -320,9 +320,9 @@ class Table extends Sheet {
 
     // 3. Schema Resolution: We use a switch(true) for strict priority routing.
     switch (true) {
-      case !!targetKeyField: {
+      case (!!targetKeyField && targetKeyField.toLowerCase() !== "keys" && this.column[targetKeyField] !== undefined): {
         // PRIORITY 1: Single Key
-        // If a 'Key' is explicitly defined (e.g., "PK"), it overrides everything else.
+        // If a 'Key' is explicitly defined (e.g., "PK") and is not the generic 'Keys' column, it overrides everything else.
 
         // Cache the metadata schema
         this._keyMetadata = {
@@ -681,27 +681,65 @@ class Table extends Sheet {
     return lastRow; // Default to end if no future dates found
   }
 
-  /**
-   * Generates and writes keys for rows that have dates but no keys.
-   */
   makeKeys() {
     const keyFieldName = this.getProperty("Key");
     const dateFieldName = this.getProperty("DateField");
     const keyPrefix = this.getProperty("KeyPrefix") || "";
 
+    // Build a map of existing sequence numbers by compact date to avoid duplicates and allow date-based resets
+    const dateSeqMap = new Map(); // compactDate -> Set of numeric sequence numbers
+    
+    this.getWindow().forEach((row) => {
+      const keyVal = String(row[this.column[keyFieldName.toLowerCase()]] || "").trim();
+      const dateVal = row[this.column[dateFieldName.toLowerCase()]];
+      if (!keyVal || !dateVal) return;
+      
+      const compactDate = DateUtils.toCompactDate(dateVal);
+      if (!compactDate) return;
+      
+      // Extract sequence number from existing key, e.g. Prefix#YYYYMMDD.SSS_hash
+      const dotIdx = keyVal.indexOf(".");
+      const underscoreIdx = keyVal.indexOf("_");
+      if (dotIdx !== -1 && underscoreIdx !== -1 && underscoreIdx > dotIdx) {
+        const seqStr = keyVal.substring(dotIdx + 1, underscoreIdx);
+        const seqNum = parseInt(seqStr, 10);
+        if (!isNaN(seqNum)) {
+          if (!dateSeqMap.has(compactDate)) {
+            dateSeqMap.set(compactDate, new Set());
+          }
+          dateSeqMap.get(compactDate).add(seqNum);
+        }
+      }
+    });
+
     let count = 0;
     this.getWindow().forEach((row, rowOffset) => {
-      const keyVal = row[this.column[keyFieldName]];
-      const dateVal = row[this.column[dateFieldName]];
+      const keyVal = row[this.column[keyFieldName.toLowerCase()]];
+      const dateVal = row[this.column[dateFieldName.toLowerCase()]];
       const hasDate = dateVal !== "" && dateVal !== null && dateVal !== undefined;
       const hasNoKey = keyVal === "" || keyVal === null || keyVal === undefined;
 
       if (hasNoKey && hasDate) {
-        const newKey = this.makeKey(dateVal, keyPrefix);
-        const physicalRow = this.firstDataRowIndex + rowOffset;
-        this.sheet.getRange(physicalRow, this.column[keyFieldName] + 1).setValue(newKey);
-        this.set(rowOffset, this.column[keyFieldName], newKey);
-        count++;
+        const compactDate = DateUtils.toCompactDate(dateVal);
+        if (compactDate) {
+          if (!dateSeqMap.has(compactDate)) {
+            dateSeqMap.set(compactDate, new Set());
+          }
+          const seqs = dateSeqMap.get(compactDate);
+          
+          // Find the first unused sequence number for this specific date starting from 0
+          let nextSeq = 0;
+          while (seqs.has(nextSeq)) {
+            nextSeq++;
+          }
+          seqs.add(nextSeq);
+          
+          const newKey = this.makeKey(dateVal, keyPrefix, 6, nextSeq);
+          const physicalRow = this.firstDataRowIndex + rowOffset;
+          this.sheet.getRange(physicalRow, this.column[keyFieldName.toLowerCase()] + 1).setValue(newKey);
+          this.set(rowOffset, this.column[keyFieldName.toLowerCase()], newKey);
+          count++;
+        }
       }
     });
 
@@ -714,7 +752,7 @@ class Table extends Sheet {
   /**
    * Generates a unique key based on date, prefix, and a random string.
    */
-  makeKey(date = new Date(), prefix = "", length = 6) {
+  makeKey(date = new Date(), prefix = "", length = 6, rowOffset = 0) {
     let d = (typeof date === 'string') ? new Date(date) : date;
     const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -722,7 +760,8 @@ class Table extends Sheet {
     for (let i = 0; i < length; i++) {
       randStr += chars.charAt(Math.floor(Math.random() * chars.length));
     }
-    return prefix + "#" + dateStr + "_" + randStr;
+    const pad = String(rowOffset).padStart(3, '0');
+    return prefix + "#" + dateStr + "." + pad + "_" + randStr;
   }
 }
 

@@ -51,7 +51,7 @@ var FormulaUtils = {
         }
         result += bracket.result;
         i = bracket.nextIdx;
-        if (bracket.handled) continue;
+        continue;
       }
 
       // 3. Words and Function Calls
@@ -225,6 +225,7 @@ var FormulaUtils = {
     let _lastIdxCacheBuilt = false;
     let _lastIdxCacheBuilding = false;
     let _rowObjectsCache = null;
+    const _dateSerialCounters = new Map();
     const props = {
       KeyPrefix: (target ? target.getProperty("KeyPrefix") : driver.getProperty("KeyPrefix")) || "",
       ImportMethod: (target ? target.getProperty("ImportMethod") : (driver ? driver.getProperty("ImportMethod") : "")) || "",
@@ -307,7 +308,7 @@ var FormulaUtils = {
         }
         return "";
       },
-      pk: (...args) => FormulaUtils._contextPk(props, DateUtils, ...args),
+      pk: (...args) => FormulaUtils._contextPk(props, DateUtils, _dateSerialCounters, ...args),
       pk2: (pk, date, rowOff) => FormulaUtils._contextPk2(DateUtils, pk, date, rowOff)
     };
 
@@ -540,20 +541,24 @@ var FormulaUtils = {
           } else {
             const parsedArgs = this.parse(args, defaultSource, targetField, contextTable);
             if (word === "pk") {
-              const parts = parsedArgs.split(/,(?![^(]*\))/);
+              const parts = this._splitTopLevelCommas(parsedArgs);
               if (parts.length >= 3) rep = `utils.pk(${parts[0].trim()}, ${parts[1].trim()}, ${parts.slice(2).join(",").trim()}, rowOff)`;
               else rep = `pk(${parsedArgs})`;
             } else if (word === "pk2") {
-              const parts = parsedArgs.split(/,(?![^(]*\))/);
-              rep = `utils.pk2(${parts[0].trim()}, ${parts[1].trim()}, rowOff)`;
+              const parts = this._splitTopLevelCommas(parsedArgs);
+              if (parts.length === 3) {
+                rep = `utils.pk2(${parts[0].trim()} + "#" + ${parts[2].trim()}, ${parts[1].trim()}, rowOff)`;
+              } else {
+                rep = `utils.pk2(${parts[0].trim()}, ${parts[1].trim()}, rowOff)`;
+              }
             } else if (word === "hash") {
               rep = `utils.hash(${parsedArgs})`;
             } else if (word === "lookup") {
-              const p = parsedArgs.split(/,(?![^(]*\))/).map(s => s.trim().replace(/^["']|["']$/g, ''));
+              const p = this._splitTopLevelCommas(parsedArgs).map(s => s.trim().replace(/^["']|["']$/g, ''));
               if (p.length >= 4) rep = `utils.lookup("${p[0]}", "${p[1]}", "${p[2]}", ${p.slice(3).join(",")})`;
               else rep = `lookup(${parsedArgs})`;
             } else if (word === "ifBlank" || word === "isBlank") {
-              const parts = parsedArgs.split(/,(?![^(]*\))/);
+              const parts = this._splitTopLevelCommas(parsedArgs);
               if (parts.length >= 3) {
                 const modeSelector = parts[0].trim();
                 const fieldNameArg = parts[1].trim();
@@ -592,7 +597,7 @@ var FormulaUtils = {
    */
   _compileMergeMacro(innerText, defaultSource, targetField, contextTable) {
     if (!innerText.trim()) return "''";
-    const parts = innerText.split(/,(?![^(]*\))/).map(s => s.trim());
+    const parts = this._splitTopLevelCommas(innerText).map(s => s.trim());
     
     // 1. Detect if Named (Sheet[Column]) or Positional ([Column])
     const hasSheetNames = parts.some(p => {
@@ -683,6 +688,33 @@ var FormulaUtils = {
   },
 
   /**
+   * Private Helper: Splits a string by commas, but only at the top level
+   * (ignoring commas inside nested parentheses/brackets).
+   */
+  _splitTopLevelCommas(str) {
+    const parts = [];
+    let current = "";
+    let depth = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str[i];
+      if (char === "(" || char === "[" || char === "{") {
+        depth++;
+        current += char;
+      } else if (char === ")" || char === "]" || char === "}") {
+        depth--;
+        current += char;
+      } else if (char === "," && depth === 0) {
+        parts.push(current);
+        current = "";
+      } else {
+        current += char;
+      }
+    }
+    parts.push(current);
+    return parts;
+  },
+
+  /**
    * Private Helper: Finds the matching closing parenthesis for an opening one.
    * @param {string} text 
    * @param {number} openIdx - Index of the opening parenthesis.
@@ -720,7 +752,7 @@ var FormulaUtils = {
       hashKey = ((hashKey << 5) - hashKey) + chr;
       hashKey |= 0; // Convert to signed 32-bit integer
     }
-    return hashKey.toString();
+    return Math.abs(hashKey).toString();
   },
 
   /**
@@ -741,7 +773,7 @@ var FormulaUtils = {
   /**
    * Context Helper: Primary Key generation
    */
-  _contextPk(props, DateUtils, ...args) {
+  _contextPk(props, DateUtils, countersMap, ...args) {
     let prefix, date, hash, rowOff;
     if (args.length >= 4) {
       [prefix, date, hash, rowOff] = args;
@@ -751,7 +783,20 @@ var FormulaUtils = {
     }
     if (!date || !hash) return "";
     const formattedDate = DateUtils.toCompactDate(date);
-    return `${prefix || ""}#${formattedDate}_${hash}`;
+    
+    // Determine the serial/sequence number, resetting every new date
+    let serial = 0;
+    if (countersMap) {
+      if (countersMap.has(formattedDate)) {
+        serial = countersMap.get(formattedDate) + 1;
+      }
+      countersMap.set(formattedDate, serial);
+    } else {
+      serial = rowOff !== undefined && rowOff !== null ? rowOff : 0;
+    }
+    
+    const pad = String(serial).padStart(3, '0');
+    return `${prefix || ""}#${formattedDate}.${pad}_${hash}`;
   },
 
   /**
@@ -770,7 +815,7 @@ var FormulaUtils = {
       const rhs = pkStr.substring(hashIdx + 1);
       return `${lhs}#${compactDate}_${rhs}`;
     } else {
-      return `Transaction#${compactDate}_${pkStr}`;
+      return "Transaction#" + compactDate + "_" + pkStr;
     }
   },
 

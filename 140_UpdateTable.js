@@ -148,7 +148,12 @@ class UpdateTable extends Table {
     if (lastRow <= this.firstDataRowIndex) return;
 
     // Physical column is 1-indexed (colOffset + 1)
-    const physicalCol = this.column[sortField] + 1;
+    const colOffset = this.column[sortField];
+    if (colOffset === undefined) {
+      myLog("warning", "SortField '%s' not found in %s column list. Bypassing sort.", sortField, this.longName);
+      return;
+    }
+    const physicalCol = colOffset + 1;
     const numRows = lastRow - this.firstDataRowIndex + 1;
     const numCols = this.getLastColumnIndex();
 
@@ -157,8 +162,9 @@ class UpdateTable extends Table {
 
       // Build a stable sort spec: primary = SortField, secondary = PK
       const sortSpec = [{ column: physicalCol, ascending: true }];
-      const keyOffset = this.column[this.getProperty("Key")];
-      if (keyOffset !== -1 && keyOffset + 1 !== physicalCol) {
+      const keyProp = this.getProperty("Key");
+      const keyOffset = keyProp ? this.column[keyProp] : undefined;
+      if (keyOffset !== undefined && keyOffset !== -1 && keyOffset + 1 !== physicalCol) {
         sortSpec.push({ column: keyOffset + 1, ascending: true });
       }
       range.sort(sortSpec);
