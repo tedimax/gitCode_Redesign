@@ -118,7 +118,7 @@ class AnnualLedger {
     let chunkStart = Math.max(absoluteStart, lastRow - 1000 + 1);
 
     while (!isFinished && lastRow >= absoluteStart) {
-      myLog("info", "AnnualLedger: Scanning backward chunk from row %d to %d...", chunkStart, lastRow);
+      myLog("trace", "AnnualLedger: Scanning backward chunk from row %d to %d...", chunkStart, lastRow);
       
       // Request the physical window expansion (Explicit backward move)
       this.sourceTable.fetch(chunkStart, (lastRow - chunkStart + 1));

@@ -483,7 +483,7 @@ function initialize() {
     throw new Error(`Bootstrap Failure: Missing mandatory Registry metadata for "${fName}". Check columns [FirstRow, LabelRow, Key].`);
   }
 
-  myLog("info", "Configuring %s: Row %d, Labels at %d, Key: %s", fName, fFirstRow, fLabelRow, fKey);
+  myLog("trace", "Configuring %s: Row %d, Labels at %d, Key: %s", fName, fFirstRow, fLabelRow, fKey);
 
   const formulasConfig = {
     SheetName: fName.split("_")[1],
@@ -497,7 +497,7 @@ function initialize() {
   const fTargetOff = globals.formulasObj.column[formulasConfig.Key.toLowerCase()];
   const fFormulaOff = globals.formulasObj.column.formula;
 
-  myLog("info", "Formulas Columns -> %s (%s), Formula (%s)", 
+  myLog("trace", "Formulas Columns -> %s (%s), Formula (%s)", 
     formulasConfig.Key, StringUtils.columnToLetter(fTargetOff), StringUtils.columnToLetter(fFormulaOff));
 
   if (fTargetOff !== undefined && fFormulaOff !== undefined) {

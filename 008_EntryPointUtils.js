@@ -186,9 +186,9 @@ function _calculateAndSaveWindow(longName, year) {
     if (fromFYColIdx !== -1) {
       const fromFYValue = (year === "FULL") ? "" : new Date(Number(year) - 1, 3, 1); // 1st April of (year - 1)
       sheetsTable.sheet.getRange(physicalRegRow, fromFYColIdx).setValue(fromFYValue);
-      myLog("info", "Updated Registry for %s: FirstRow=%d, LastRow=%d, FromFY=%s", longName, firstRow, lastRow, String(fromFYValue));
+      myLog("trace", "Updated Registry for %s: FirstRow=%d, LastRow=%d, FromFY=%s", longName, firstRow, lastRow, String(fromFYValue));
     } else {
-      myLog("info", "Updated Registry for %s: FirstRow=%d, LastRow=%d", longName, firstRow, lastRow);
+      myLog("trace", "Updated Registry for %s: FirstRow=%d, LastRow=%d", longName, firstRow, lastRow);
     }
   } catch (e) {
     myLog("error", "Failed to set window for %s: %s", longName, e.message);

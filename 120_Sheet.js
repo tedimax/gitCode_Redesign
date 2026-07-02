@@ -180,7 +180,7 @@ class Sheet {
     // 1. Backward Extension (Prepend)
     if (range.start < this._windowStartRow) {
       const gapRows = this._windowStartRow - range.start;
-      myLog("info", "Sheet %s: Extending window BACKWARDS by %d rows", this.sheetName, gapRows);
+      myLog("trace", "Sheet %s: Extending window BACKWARDS by %d rows", this.sheetName, gapRows);
       const gapData = this.sheet.getRange(range.start, 1, gapRows, range.lastCol).getValues();
       this._window = [...gapData, ...this._window];
       this._windowStartRow = range.start;
@@ -191,7 +191,7 @@ class Sheet {
     const reqEndRow = range.start + range.numRows - 1;
     if (reqEndRow > currentEndRow) {
       const gapRows = reqEndRow - currentEndRow;
-      myLog("info", "Sheet %s: Extending window FORWARDS by %d rows", this.sheetName, gapRows);
+      myLog("trace", "Sheet %s: Extending window FORWARDS by %d rows", this.sheetName, gapRows);
       const gapData = this.sheet.getRange(currentEndRow + 1, 1, gapRows, range.lastCol).getValues();
       this._window = [...this._window, ...gapData];
     }
@@ -315,21 +315,21 @@ class Sheet {
     if (!matrix?.length || !matrix[0]?.length) return;
     const numRows = matrix.length;
     const numCols = matrix[0].length;
-    myLog("info", `Writing ${numRows} rows to ${this.sheetName} starting at row ${startRow}`);
+    myLog("trace", `Writing ${numRows} rows to ${this.sheetName} starting at row ${startRow}`);
     // 1. Auto-expand rows if needed to prevent out-of-bounds errors
     const maxRows = this.sheet.getMaxRows();
     const neededRows = startRow + numRows - 1;
     if (neededRows > maxRows) {
       const rowsToAdd = neededRows - maxRows;
       this.sheet.insertRowsAfter(maxRows, rowsToAdd);
-      myLog("info", "Sheet %s: Expanded physical rows by %d (maxRows is now %d)", this.sheetName, rowsToAdd, neededRows);
+      myLog("trace", "Sheet %s: Expanded physical rows by %d (maxRows is now %d)", this.sheetName, rowsToAdd, neededRows);
     }
     // 2. Auto-expand columns if needed
     const maxCols = this.sheet.getMaxColumns();
     if (numCols > maxCols) {
       const colsToAdd = numCols - maxCols;
       this.sheet.insertColumnsAfter(maxCols, colsToAdd);
-      myLog("info", "Sheet %s: Expanded physical columns by %d (maxColumns is now %d)", this.sheetName, colsToAdd, numCols);
+      myLog("trace", "Sheet %s: Expanded physical columns by %d (maxColumns is now %d)", this.sheetName, colsToAdd, numCols);
     }
     // 3. Commit data to the sheet
     this.sheet.getRange(startRow, 1, numRows, numCols).setValues(matrix);

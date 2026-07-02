@@ -6,7 +6,9 @@
  * Calls utilities in 008_EntryPointUtils.js for lower-level work.
  */
 
-
+function testImport() {
+  _importNamedSheet("Reconciliation_Merged")
+}
 /**
  * Entry Point: Generates unique keys for rows in the current active sheet that have populated dates but missing key entries.
  */
@@ -16,7 +18,7 @@ function makeKeys() {
   const sheetName = activeSheet.getName();
   const activeSsid = activeSheet.getParent().getId();
 
-  myLog("info", "Generating keys for active sheet: %s", sheetName);
+  myLog("trace", "Generating keys for active sheet: %s", sheetName);
 
   try {
     const config = Registry.getSheetConfigBySheetName(sheetName, activeSsid);
@@ -33,7 +35,7 @@ function makeKeys() {
     const table = Utils.getSheetInstance(longName);
     if (table && typeof table.makeKeys === 'function') {
       table.makeKeys();
-      myLog("info", "Finished generating keys for %s", sheetName);
+      myLog("trace", "Finished generating keys for %s", sheetName);
       SpreadsheetApp.getUi().alert(`Success: Finished generating keys for active sheet "${sheetName}".`);
     } else {
       myLog("warn", "Sheet %s does not support key generation.", sheetName);
@@ -55,7 +57,7 @@ function deduplicateActiveSheet() {
   const sheetName = activeSheet.getName();
   const activeSsid = activeSheet.getParent().getId();
 
-  myLog("info", "Deduplicating active sheet: %s", sheetName);
+  myLog("trace", "Deduplicating active sheet: %s", sheetName);
 
   try {
     const config = Registry.getSheetConfigBySheetName(sheetName, activeSsid);
@@ -112,7 +114,7 @@ function runActiveAnnualSheet() {
   }
 
   const year = Number(yearMatch[0]);
-  myLog("info", "Entry Point: running active annual sheet for year %d", year);
+  myLog("trace", "Entry Point: running active annual sheet for year %d", year);
   _runAnnualReportForYear(year);
 }
 
@@ -125,7 +127,7 @@ function importActiveSheet() {
   const sheetName = activeSheet.getName();
   const activeSsid = activeSheet.getParent().getId();
 
-  myLog("info", "Importing data for active sheet: %s", sheetName);
+  myLog("trace", "Importing data for active sheet: %s", sheetName);
 
   try {
     const config = Registry.getSheetConfigBySheetName(sheetName, activeSsid);
@@ -136,7 +138,7 @@ function importActiveSheet() {
     const table = Utils.getSheetInstance(config.LongName);
     if (table && typeof table.execute === 'function') {
       const stats = table.execute();
-      myLog("info", "Finished importing data for %s", sheetName);
+      myLog("trace", "Finished importing data for %s", sheetName);
     } else {
       myLog("warn", "Sheet %s does not support direct import.", sheetName);
     }
@@ -154,7 +156,7 @@ function defineActiveSheetNamedRanges() {
   const sheetName = activeSheet.getName();
   const activeSsid = activeSheet.getParent().getId();
 
-  myLog("info", "Defining Named Ranges for active sheet: %s", sheetName);
+  myLog("trace", "Defining Named Ranges for active sheet: %s", sheetName);
 
   try {
     const config = Registry.getSheetConfigBySheetName(sheetName, activeSsid);
@@ -165,7 +167,7 @@ function defineActiveSheetNamedRanges() {
     const table = Utils.getSheetInstance(config.LongName);
     if (table) {
       table.writeNamedRanges();
-      myLog("info", "Finished defining ranges for %s", sheetName);
+      myLog("trace", "Finished defining ranges for %s", sheetName);
     }
   } catch (e) {
     myLog("error", "Failed to define ranges: %s", e.message);
@@ -183,14 +185,14 @@ function runAllAnnualReports() {
   // FY is labelled by its END year (e.g. Apr 2026 - Mar 2027 = FY2027)
   const endYear = (now.getMonth() >= 3) ? currentYear + 1 : currentYear;
 
-  myLog("info", "Entry Point: Starting batch run for all years (%d to %d)", startYear, endYear);
+  myLog("trace", "Entry Point: Starting batch run for all years (%d to %d)", startYear, endYear);
 
   for (let year = startYear; year <= endYear; year++) {
     const isFirst = (year === startYear);
     _runAnnualReportForYear(year, 2, isFirst); // Force SourceFirstRow to 2, and FullLoad on the first pass
   }
 
-  myLog("info", "Entry Point: Batch run complete.");
+  myLog("trace", "Entry Point: Batch run complete.");
 }
 
 /**
@@ -198,7 +200,7 @@ function runAllAnnualReports() {
  */
 function startReconciliation() {
   initialize();
-  myLog("info", "Trigger: Start New Reconciliation");
+  myLog("trace", "Trigger: Start New Reconciliation");
   const recon = _getReconciliationInstance();
   if (recon) recon.startNewReconciliation();
 }
@@ -208,7 +210,7 @@ function startReconciliation() {
  */
 function saveReconciliation() {
   initialize();
-  myLog("info", "Trigger: Save Reconciled Entries");
+  myLog("trace", "Trigger: Save Reconciled Entries");
   const recon = _getReconciliationInstance();
   if (recon) recon.processBalancedRows();
 }
@@ -248,7 +250,7 @@ function importPendingSheets() {
       }
     });
     summary += `\n======================================================\nProcessed ${count} sheets.\n======================================================`;
-    myLog("info", summary);
+    myLog("trace", summary);
   };
 
   const pendingSheets = [];
@@ -293,7 +295,7 @@ function importPendingSheets() {
   try {
     sortedPendingSheets.forEach(item => {
       const longName = item.longName;
-      myLog("info", "Batch: Processing pending sheet: %s (Order: %d)", longName, item.order);
+      myLog("trace", "Batch: Processing pending sheet: %s (Order: %d)", longName, item.order);
       try {
         const table = Utils.getSheetInstance(longName);
         if (table && typeof table.execute === "function") {
@@ -328,7 +330,7 @@ function importPendingSheets() {
  */
 function resetPendingSheets() {
   initialize();
-  myLog("info", "Registry: Resetting all pending flags to FALSE.");
+  myLog("trace", "Registry: Resetting all pending flags to FALSE.");
 
   if (globals.sheetsObj.column.process === -1) return;
 
@@ -347,7 +349,7 @@ function resetPendingSheets() {
  */
 function markAllDirty() {
   initialize();
-  myLog("info", "Registry: Marking runnable sheets as DIRTY.");
+  myLog("trace", "Registry: Marking runnable sheets as DIRTY.");
 
   if (globals.sheetsObj.column.longName === -1) {
     throw new Error("Registry Error: The 'LongName' column is missing from the Sheets configuration.");
@@ -412,9 +414,9 @@ function setAllWindows() {
  * Entry Point: Sets all named ranges for all core logical sheets.
  */
 function defineAllNamedRanges() {
-  myLog("info", "Starting batch Named Range definition...");
+  myLog("trace", "Starting batch Named Range definition...");
   CONFIG_CONSTANTS.CORE_SHEET_CONFIG.forEach(item => _defineNamedRangeForSheet(item.longName));
-  myLog("info", "Batch Named Range definition complete.");
+  myLog("trace", "Batch Named Range definition complete.");
 }
 
 // =========================================================================
@@ -571,7 +573,7 @@ function getSheetDependencyMap() {
  */
 function runRepairSingle(longName) {
   initialize();
-  myLog("info", "Repair: Processing single sheet %s...", longName);
+  myLog("trace", "Repair: Processing single sheet %s...", longName);
 
   // Specialized handling for Reconcile sheet
   if (longName === "Reconciliation_NewReconcile") {
@@ -680,10 +682,10 @@ function setLogLevelTrace() {
 }
 
 /**
- * Entry Point: Sets the system logging level to 'Info'.
+ * Entry Point: Sets the system logging level to 'trace'.
  */
-function setLogLevelInfo() {
-  _setLogLevel("Info");
+function setLogLeveltrace() {
+  _setLogLevel("trace");
 }
 
 /**

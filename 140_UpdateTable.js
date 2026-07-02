@@ -270,62 +270,58 @@ class UpdateTable extends Table {
 
     newRowsSnapshot.forEach((newRow, idx) => {
       const rowKey = this.getRowKey(newRow);
-      if (!rowKey) return;
+      if (!rowKey) {
+        myLog("trace", "UpdateTable [%s]: Row %d skipped - no rowKey generated.", this.longName, idx);
+        return;
+      }
 
       const existingRowOff = this.getHashKeyMap().get(rowKey.toLowerCase());
 
       // Scenario A: The row key already exists in the destination sheet (potential update)
       if (existingRowOff !== undefined) {
-        // Enforce Read-Only Slack Window: Do not update historical rows that lie before the absolute start row boundary
         const physicalRowIndex = (this._windowStartRow !== null ? this._windowStartRow : this.firstDataRowIndex) + existingRowOff;
+        myLog("trace", "UpdateTable [%s] COMPARISON: Key '%s' found at offset %d (physical row %d). dataStartRow limit is %d.", 
+          this.longName, rowKey, existingRowOff, physicalRowIndex, this.dataStartRow);
+        
         if (this.dataStartRow && physicalRowIndex < this.dataStartRow) {
+          myLog("trace", "UpdateTable [%s]: Bypassed update check for Key '%s' (physical row %d < dataStartRow %d)", 
+            this.longName, rowKey, physicalRowIndex, this.dataStartRow);
           return; // Skip updates to locked/historical entries
         }
 
-        // Retrieve the matching existing row from the sheet cache window
         const existingRow = this.getWindow()[existingRowOff];
 
         // Scan each column to determine if any field values have changed (is dirty)
         const isDirty = newRow.some((newVal, colOff) => {
           const fieldType = fieldTypes[colOff];
-
-          // Normalize both values using the defined schema type for the column
           const normalizedNew = TypeUtils.castType(newVal, fieldType);
           const normalizedExisting = TypeUtils.castType(existingRow[colOff], fieldType);
 
-          // Default check: simple stringified comparison
           let dirty = String(normalizedNew) !== String(normalizedExisting);
 
-          // Performance/Precision Guard: Fuzzy numeric comparison for floating point numbers
-          // This avoids false-positive dirty flags caused by minor JavaScript float representation issues
           if (dirty && typeof normalizedNew === 'number' && typeof normalizedExisting === 'number') {
             const columnName = labels[colOff];
-            // 'balance' gets a dedicated fuzzy threshold, other numeric columns get the standard threshold
             const threshold = (columnName && columnName.toLowerCase() === "balance")
               ? CONFIG_CONSTANTS.FUZZY_BALANCE_THRESHOLD
               : CONFIG_CONSTANTS.FUZZY_NUMERIC_THRESHOLD;
-
-            // Re-evaluate dirty status using the tolerance threshold
             dirty = Math.abs(normalizedNew - normalizedExisting) > threshold;
           }
 
-          // Primary Key Guard: Perform case-insensitive string comparison for Primary Key fields (PK)
           if (labels[colOff] && labels[colOff].toUpperCase() === "PK" && dirty) {
             dirty = String(normalizedNew).toLowerCase() !== String(normalizedExisting).toLowerCase();
           }
 
-          // Log detailed traces for the specific column mismatch if it remains dirty
-          if (dirty) {
-            myLog("trace", "  Column '%s' is dirty: New [%s] vs Existing [%s] (RAW: Source [%s] / Target [%s])",
-              labels[colOff], normalizedNew, normalizedExisting, newVal, existingRow[colOff]);
-          }
+          myLog("trace", "  Col %d (%s) Type [%s]: New [%s] (raw: [%s]) vs Existing [%s] (raw: [%s]) -> dirty=%s",
+            colOff, labels[colOff], fieldType, normalizedNew, newVal, normalizedExisting, existingRow[colOff], dirty);
+
           return dirty;
         });
 
-        // If one or more columns are dirty, mark this row as requiring an update
         if (isDirty) {
-          myLog("trace", "Row " + idx + " (Key: " + rowKey + ") -> UPDATE (Dirty)");
+          myLog("info", "Row " + idx + " (Key: " + rowKey + ") -> UPDATE (Dirty)");
           rowsToUpdate.push({ offset: existingRowOff, data: newRow });
+        } else {
+          myLog("trace", "Row " + idx + " (Key: " + rowKey + ") -> NO CHANGE");
         }
       } else {
         // Scenario B: The row key does not exist in the destination sheet (new insertion)

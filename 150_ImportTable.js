@@ -85,7 +85,7 @@ class ImportTable extends UpdateTable {
     });
 
     if (excludedCount > 0 && targetBoundaryFY) {
-      myLog("info", "ImportTable [Boundary Guard]: Excluded %d source rows preceding boundary FY %d",
+      myLog("trace", "ImportTable [Boundary Guard]: Excluded %d source rows preceding boundary FY %d",
         excludedCount, targetBoundaryFY);
     }
 
@@ -356,9 +356,12 @@ class ImportTable extends UpdateTable {
     return plan.reduce((calc, step) => {
       const targetField = step.targetField;
 
-      const rawResult = step.isSimple
-        ? sourceRow[step.sourceIdx]
-        : step.compiledFormula(rowOff, calc, context, context.props, sourceRow, sourceLabels);
+      let rawResult;
+      if (step.isSimple) {
+        rawResult = step.sourceIdx !== -1 ? sourceRow[step.sourceIdx] : "";
+      } else {
+        rawResult = step.compiledFormula(rowOff, calc, context, context.props, sourceRow, sourceLabels);
+      }
 
       const fieldType = Registry.getType(this.longName, targetField);
       const castVal = TypeUtils.castType(rawResult, fieldType);
@@ -497,7 +500,7 @@ class ImportTable extends UpdateTable {
     this._filterDeps = [];
     if (filterFormula) {
       const parsedFilter = FormulaUtils.parse(filterFormula, sourceLongName, "__FILTER__", this.longName);
-      myLog("info", "Filter for %s: Original='%s' | Compiled='%s'", this.longName, filterFormula, parsedFilter);
+      myLog("trace", "Filter for %s: Original='%s' | Compiled='%s'", this.longName, filterFormula, parsedFilter);
       this._compiledFilter = new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return ' + parsedFilter);
       this._filterDeps = FormulaUtils.extractDependencies(filterFormula, "__FILTER__");
     }
@@ -524,17 +527,27 @@ class ImportTable extends UpdateTable {
       const formulaStr = this._rawFormulaMap.get(targetField) || `[${targetField}]`;
       const match = String(formulaStr).trim().match(/^\[([^\]]+)\]$/);
       let sourceIdx = -1;
+      let isSimple = false;
+      let missingSourceLabel = null;
       if (match) {
+        isSimple = true;
         const sourceLabel = match[1].trim();
         sourceIdx = sourceLabels.indexOf(sourceLabel);
         if (sourceIdx === -1) {
-          const colNum = this.column[targetField] + 1;
-          const colLetter = StringUtils.columnToLetter(this.column[targetField]);
-          throw new Error(`CRITICAL MAPPING ERROR: Target field '${targetField}' (Column ${colLetter}/${colNum}) requires source column '[${sourceLabel}]', but it was not found in ${sourceSheet.longName}. Available source columns: [${sourceLabels.slice(0, 5).join(", ")}...]`);
+          missingSourceLabel = sourceLabel;
+          const fieldType = Registry.getType(this.longName, targetField) || "String";
+          let actionDesc = "empty string / null";
+          if (["Integer", "Currency", "Percentage"].includes(fieldType)) {
+            actionDesc = "0";
+          } else if (fieldType === "Boolean") {
+            actionDesc = "false";
+          }
+          myLog("warning", "MAPPING WARNING: Target field '%s' requires missing source column '[%s]' in %s. Column will default to %s.", 
+            targetField, sourceLabel, sourceSheet.longName, actionDesc);
         }
       }
 
-      return { targetField, isSimple: sourceIdx !== -1, sourceIdx, compiledFormula };
+      return { targetField, isSimple, sourceIdx, compiledFormula, missingSourceLabel };
     });
   }
 
@@ -544,7 +557,7 @@ class ImportTable extends UpdateTable {
   _tryFastClone(sourceSheet) {
     this._initializeMappingEngine(sourceSheet);
     if (this._compiledFilter) {
-      myLog("info", "Fast Clone candidate %s rejected: NewFilter is configured. Falling back to full engine.", this.longName);
+      myLog("trace", "Fast Clone candidate %s rejected: NewFilter is configured. Falling back to full engine.", this.longName);
       return { success: false };
     }
 
@@ -554,7 +567,7 @@ class ImportTable extends UpdateTable {
       return { success: false };
     }
 
-    myLog("info", "Fast Clone triggered for %s...", this.longName);
+    myLog("trace", "Fast Clone triggered for %s...", this.longName);
     const sourceWindow = sourceSheet.getWindow();
     const sourceLabels = sourceSheet.getLabels();
     const targetLabels = this.getLabels();
@@ -570,7 +583,7 @@ class ImportTable extends UpdateTable {
       const targetField = targetLabels[missingIdx];
       const colNum = this.column[targetField] + 1;
       const colLetter = StringUtils.columnToLetter(this.column[targetField]);
-      myLog("info", "Fast Clone candidate %s rejected: missing source column for '%s' (Column ${colLetter}/${colNum}). Falling back to full engine.", this.longName, targetField);
+      myLog("trace", "Fast Clone candidate %s rejected: missing source column for '%s' (Column ${colLetter}/${colNum}). Falling back to full engine.", this.longName, targetField);
       return { success: false };
     }
 

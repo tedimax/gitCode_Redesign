@@ -44,7 +44,7 @@ class ReconcileProcessor extends ReconcileBuilder {
 
   /**
    * Initializes destination tables for the reconciliation process.
-   * @returns {{ groupsTable: UpdateTable, mergedTable: Table, logTable: UpdateTable }}
+   * @returns {{ groupsTable: UpdateTable, mergedTable: Table, uncheckedTable: Table, logTable: UpdateTable }}
    */
   _prefetchDestinationTables() {
     const groupsTable = getSheetInstance("Reconciliation_Groups");

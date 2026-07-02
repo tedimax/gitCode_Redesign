@@ -42,6 +42,10 @@ const CONFIG_CONSTANTS = {
   RECONCILE_IDENTIFIER_FIELDS: ["pk", "fk", "depositId", "paymentId"],
   DEFAULT_ANNUAL_SUMMARY_NAMES_TABLE: "AnnualSummaries_Names",
   DEFAULT_ASSET_LEDGERS: ["Ledgers_Bank", "Ledgers_Cash", "Ledgers_Assets"],
+
+  // New constants for sequence handling
+  SEQ_FIELD: "Seq",
+  SEQ_MANDATORY_TABLES: ["Ledgers_Bank", "Ledgers_Cash", "Ledgers_Assets", "Reconciliation_Merged"],
   // Definitive mapping of high-fidelity LongNames to user-friendly labels
   CORE_SHEET_CONFIG: [
     // Staging Sheets (Drive -> Spreadsheet)

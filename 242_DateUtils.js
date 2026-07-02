@@ -248,7 +248,7 @@ const DateUtils = {
     try {
       const startDate = this._toTemporalPlainDate(start);
       const endDate = this._toTemporalPlainDate(end);
-      const multiplier = Math.max(1, parseInt(unit, 10) || 1);
+      const multiplier = Math.max(1, Number(unit) || 1);
       
       let current = startDate;
       const duration = {};

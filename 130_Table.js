@@ -402,8 +402,8 @@ class Table extends Sheet {
           }
 
           // Strictly cast and normalize each piece of the composite key to guarantee consistent hashing
-          const val = TypeUtils.castType(rawCell, fieldMeta.type);
-          return String(val || "").trim().toLowerCase();
+          const pkRegex = /^[A-Za-z0-9.-]+#(20\\d{2}|20\\d{6})(?:_\\d{3})?_[A-Za-z0-9.#-]+$/;
+          return String(rawCell || "").trim().toLowerCase();
         }).join("|");
 
         // If every single column that makes up the composite key is empty, it's a ghost row. Skip it.
@@ -554,7 +554,7 @@ class Table extends Sheet {
 
       if (this.longName === "Reconciliation_Groups") {
         this._lookupLastRowFetched = this.getLastRowIndex();
-        myLog("info", "Registry: Initialized backward chunk lookup cache for %s (%s->%s), bottom row is %d",
+        myLog("trace", "Registry: Initialized backward chunk lookup cache for %s (%s->%s), bottom row is %d",
           this.longName, keyCol, valCol, this._lookupLastRowFetched);
       } else {
         // Force the RAM window to load in full for other smaller config tables
@@ -581,7 +581,7 @@ class Table extends Sheet {
         const startRow = Math.max(this.firstDataRowIndex, this._lookupLastRowFetched - chunkSize + 1);
         const numRows = this._lookupLastRowFetched - startRow + 1;
 
-        myLog("info", "Groups Lookup: Scanning backward chunk from row %d to %d for Group '%s'...", startRow, this._lookupLastRowFetched, searchVal);
+        myLog("trace", "Groups Lookup: Scanning backward chunk from row %d to %d for Group '%s'...", startRow, this._lookupLastRowFetched, searchVal);
 
         this.fetch(startRow, numRows);
 
@@ -760,8 +760,8 @@ class Table extends Sheet {
     for (let i = 0; i < length; i++) {
       randStr += chars.charAt(Math.floor(Math.random() * chars.length));
     }
-    const pad = String(rowOffset).padStart(3, '0');
-    return prefix + "#" + dateStr + "." + pad + "_" + randStr;
+    // New format: prefix#YYYYMMDD_hash (no sequence dot)
+    return prefix + "#" + dateStr + "_" + randStr;
   }
 }
 
