@@ -9,6 +9,10 @@
 function testImport() {
   _importNamedSheet("Reconciliation_Merged")
 }
+
+function testWindow() {
+  resetFYWindow("NewAccounts_TestSheetDest");
+}
 /**
  * Entry Point: Generates unique keys for rows in the current active sheet that have populated dates but missing key entries.
  */
@@ -371,8 +375,11 @@ function markAllDirty() {
   SpreadsheetApp.getUi().alert(`Success: Marked ${dirtyCount} runnable sheets as DIRTY. Use 'Import Pending Sheets' to run.`);
 }
 
-
-
+function resetFYWindow(longName) {
+  initialize();
+  const year = Temporal.PlainDate.from(Registry.getSheetConfig(longName).FromFY).year;
+  _calculateAndSaveWindow(longName, year);
+}
 
 /**
  * Entry Point: Sets windows for all core sheets.

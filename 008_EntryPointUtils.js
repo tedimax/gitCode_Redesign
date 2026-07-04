@@ -114,6 +114,7 @@ function _promptForYear() {
   return val ? Number(val) : "FULL";
 }
 
+
 /**
  * Core Orchestrator: Calculates FirstRow/LastRow and saves to Registry by LongName.
  */

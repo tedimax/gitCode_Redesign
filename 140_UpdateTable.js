@@ -126,7 +126,8 @@ class UpdateTable extends Table {
         SpreadsheetApp.flush();
         this.sortData();
 
-        // 5. Post-persistence: Recalculate named ranges since the physical boundary and positions have changed.
+        // 5. Post-persistence: Recalculate named ranges since the physical boundary and positions have changed
+        resetFYWindow(this.longName);
         this.writeNamedRanges();
       }
 
@@ -139,7 +140,7 @@ class UpdateTable extends Table {
 
   /**
    * Sorts the data physically on the sheet based on the SortField property.
-   */
+   *
   sortData() {
     const sortField = this.getProperty("SortField");
     if (!sortField) return;
@@ -170,7 +171,50 @@ class UpdateTable extends Table {
       range.sort(sortSpec);
       myLog("info", "Sorted %s by %s (Col %d) + PK tiebreak", this.longName, sortField, physicalCol);
     }
+  }*/
+ sortData() {
+  const sortFieldsStr = this.getProperty("SortFields");
+  if (!sortFieldsStr) return;
+
+  const lastRow = this.getLastRowIndex();
+  if (lastRow <= this.firstDataRowIndex) return;
+
+  // Split the CSV string, trim whitespace, and filter out empty values
+  const sortFields = sortFieldsStr.split(',').map(f => f.trim()).filter(Boolean);
+  if (sortFields.length === 0) return;
+
+  const sortSpec = [];
+  const loggedFields = [];
+
+  // Loop through and build the sort specification (major fields first)
+  for (const field of sortFields) {
+    const colOffset = this.column[field];
+    if (colOffset === undefined) {
+      myLog("warning", "SortField '%s' not found in %s column list. Skipping field.", field, this.longName);
+      continue;
+    }
+    const physicalCol = colOffset + 1;
+    sortSpec.push({ column: physicalCol, ascending: true });
+    loggedFields.push(`${field} (Col ${physicalCol})`);
   }
+
+  // If none of the provided fields were valid, bypass the sort completely
+  if (sortSpec.length === 0) {
+    myLog("warning", "No valid sort fields found in '%s' for %s. Bypassing sort.", sortFieldsStr, this.longName);
+    return;
+  }
+
+  const numRows = lastRow - this.firstDataRowIndex + 1;
+  const numCols = this.getLastColumnIndex();
+
+  if (numRows > 0 && numCols > 0) {
+    const range = this.sheet.getRange(this.firstDataRowIndex, 1, numRows, numCols);
+
+    // Sort strictly by the built sortSpec array
+    range.sort(sortSpec);
+    myLog("info", "Sorted %s by %s", this.longName, loggedFields.join(" + "));
+  }
+}
 
 
 
@@ -178,6 +222,7 @@ class UpdateTable extends Table {
     this.clearDataArea();
 
     if (newData.length > 0) {
+      this._assignSeqValues(newData);
       this.writeChunks(this.dataStartRow, newData);
     }
 
@@ -197,6 +242,7 @@ class UpdateTable extends Table {
     });
 
     if (rowsToAdd.length > 0) {
+      this._assignSeqValues(rowsToAdd);
       const startRow = this.getLastRowIndex() + 1;
       this.writeChunks(startRow, rowsToAdd);
     }
@@ -217,6 +263,7 @@ class UpdateTable extends Table {
 
     // 3. Append entirely new rows
     if (rowsToAdd.length > 0) {
+      this._assignSeqValues(rowsToAdd);
       const startRow = this.getLastRowIndex() + 1;
       this.writeChunks(startRow, rowsToAdd);
     }
@@ -280,11 +327,11 @@ class UpdateTable extends Table {
       // Scenario A: The row key already exists in the destination sheet (potential update)
       if (existingRowOff !== undefined) {
         const physicalRowIndex = (this._windowStartRow !== null ? this._windowStartRow : this.firstDataRowIndex) + existingRowOff;
-        myLog("trace", "UpdateTable [%s] COMPARISON: Key '%s' found at offset %d (physical row %d). dataStartRow limit is %d.", 
+        myLog("trace", "UpdateTable [%s] COMPARISON: Key '%s' found at offset %d (physical row %d). dataStartRow limit is %d.",
           this.longName, rowKey, existingRowOff, physicalRowIndex, this.dataStartRow);
-        
+
         if (this.dataStartRow && physicalRowIndex < this.dataStartRow) {
-          myLog("trace", "UpdateTable [%s]: Bypassed update check for Key '%s' (physical row %d < dataStartRow %d)", 
+          myLog("trace", "UpdateTable [%s]: Bypassed update check for Key '%s' (physical row %d < dataStartRow %d)",
             this.longName, rowKey, physicalRowIndex, this.dataStartRow);
           return; // Skip updates to locked/historical entries
         }
@@ -370,6 +417,71 @@ class UpdateTable extends Table {
     const matrix = rowBlock.map(item => item.data);
     this.writeBlock(startRow, matrix);
   }
+  /**
+   * Stamps the Seq column in-place on a matrix of row arrays, for tables that require it.
+   *
+   * Rules:
+   *  - Only runs for tables listed in CONFIG_CONSTANTS.SEQ_MANDATORY_TABLES.
+   *  - Only runs when the target sheet has a Seq column and a DateField property.
+   *  - Seq is set to 0 for the first row on a given date, incremented by 1 for each
+   *    subsequent row on the same date, and reset to 0 when the date changes.
+   *  - Always stamps unconditionally — the formula engine writes the Integer default (0)
+   *    into the Seq slot when the source has no Seq column, so there is no reliable way
+   *    to distinguish a source-supplied value from a default. Since this method is only
+   *    ever called for rows being physically added to the sheet, always stamping is correct.
+   *
+   * Called BEFORE writeChunks so that the physical write order matches the Seq values.
+   * Update mode (existing rows) never calls this, preserving their existing Seq values.
+   *
+   * @param {Array<Array<any>>} rows - The row matrix to stamp in-place.
+   */
+  _assignSeqValues(rows) {
+    if (!rows || rows.length === 0) return;
+
+    // 1. Guard: only applicable to mandatory tables
+    const mandatoryTables = CONFIG_CONSTANTS.SEQ_MANDATORY_TABLES || [];
+    if (!mandatoryTables.includes(this.longName)) return;
+
+    // 2. Guard: target sheet must have both a Seq column and a DateField
+    const seqField = CONFIG_CONSTANTS.SEQ_FIELD || "Seq";
+    const seqColIdx = this.column[seqField];
+    if (seqColIdx === undefined) return;
+
+    const dateFieldName = this.getProperty("DateField");
+    if (!dateFieldName) return;
+    const dateColIdx = this.column[dateFieldName];
+    if (dateColIdx === undefined) return;
+
+    // 3. Stamp Seq values sequentially per date.
+    //    These rows are always being physically added to the sheet (never updated),
+    //    so we always stamp — even if the formula engine has already placed a default
+    //    Integer value of 0 in the Seq slot (which would be indistinguishable from a
+    //    real source-supplied 0).
+    let lastDateKey = null;
+    let currentSeq = 0;
+
+    rows.forEach(row => {
+      const dateVal = row[dateColIdx];
+      if (dateVal === null || dateVal === undefined || dateVal === "") return;
+
+      // Produce a stable string key for the date (works for Date objects and strings)
+      const dateKey = (dateVal instanceof Date)
+        ? `${dateVal.getFullYear()}-${dateVal.getMonth()}-${dateVal.getDate()}`
+        : String(dateVal);
+
+      if (dateKey !== lastDateKey) {
+        currentSeq = 0;
+        lastDateKey = dateKey;
+      } else {
+        currentSeq++;
+      }
+
+      row[seqColIdx] = currentSeq;
+    });
+
+    myLog("info", "_assignSeqValues [%s]: Seq column stamped for %d rows.", this.longName, rows.length);
+  }
+
   /**
    * Overrides Sheet.flushMemory to also clear transformation data.
    */

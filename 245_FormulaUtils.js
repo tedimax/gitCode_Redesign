@@ -225,7 +225,7 @@ var FormulaUtils = {
     let _lastIdxCacheBuilt = false;
     let _lastIdxCacheBuilding = false;
     let _rowObjectsCache = null;
-    const _dateSerialCounters = new Map();
+
     const props = {
       KeyPrefix: (target ? target.getProperty("KeyPrefix") : driver.getProperty("KeyPrefix")) || "",
       ImportMethod: (target ? target.getProperty("ImportMethod") : (driver ? driver.getProperty("ImportMethod") : "")) || "",
@@ -308,7 +308,7 @@ var FormulaUtils = {
         }
         return "";
       },
-      pk: (...args) => FormulaUtils._contextPk(props, DateUtils, _dateSerialCounters, ...args),
+      pk: (...args) => FormulaUtils._contextPk(props, DateUtils, ...args),
       pk2: (pk, date, rowOff) => FormulaUtils._contextPk2(DateUtils, pk, date, rowOff)
     };
 
@@ -772,31 +772,19 @@ var FormulaUtils = {
 
   /**
    * Context Helper: Primary Key generation
+   * Format: prefix#YYYYMMDD_hash
    */
-  _contextPk(props, DateUtils, countersMap, ...args) {
-    let prefix, date, hash, rowOff;
-    if (args.length >= 4) {
-      [prefix, date, hash, rowOff] = args;
+  _contextPk(props, DateUtils, ...args) {
+    let prefix, date, hash;
+    if (args.length >= 3) {
+      [prefix, date, hash] = args;
     } else {
-      [date, hash, rowOff] = args;
+      [date, hash] = args;
       prefix = props.KeyPrefix;
     }
     if (!date || !hash) return "";
     const formattedDate = DateUtils.toCompactDate(date);
-    
-    // Determine the serial/sequence number, resetting every new date
-    let serial = 0;
-    if (countersMap) {
-      if (countersMap.has(formattedDate)) {
-        serial = countersMap.get(formattedDate) + 1;
-      }
-      countersMap.set(formattedDate, serial);
-    } else {
-      serial = rowOff !== undefined && rowOff !== null ? rowOff : 0;
-    }
-    
-    const pad = String(serial).padStart(3, '0');
-    return `${prefix || ""}#${formattedDate}.${pad}_${hash}`;
+    return `${prefix || ""}#${formattedDate}_${hash}`;
   },
 
   /**
