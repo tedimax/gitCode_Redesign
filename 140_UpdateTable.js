@@ -172,9 +172,9 @@ class UpdateTable extends Table {
       myLog("info", "Sorted %s by %s (Col %d) + PK tiebreak", this.longName, sortField, physicalCol);
     }
   }*/
- sortData() {
-  const sortFieldsStr = this.getProperty("SortFields");
-  if (!sortFieldsStr) return;
+  sortData() {
+   const sortFieldsStr = this.getProperty("SortField") || this.getProperty("SortFields");
+   if (!sortFieldsStr) return;
 
   const lastRow = this.getLastRowIndex();
   if (lastRow <= this.firstDataRowIndex) return;

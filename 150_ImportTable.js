@@ -65,9 +65,8 @@ class ImportTable extends UpdateTable {
       ? this._getTargetBoundaryFY(fyFieldName)
       : null;
 
-    const configMethod = this.getProperty("importmethod") || "replace";
-    const finalMode = String(this._modeOverride || configMethod).toLowerCase();
-    const isReplace = finalMode === "replace" || finalMode === "replacerows";
+    const configMethod = this.getProperty("importmethod") || "update";
+    this._modeOverride = String(this._modeOverride || configMethod).toLowerCase();
 
     const excludedCount = sourceSheets.reduce((acc, sourceSheet) => {
       return acc + this._transformSourceSheet(sourceSheet, targetObjects, seenPKs, targetBoundaryFY, fyFieldName, loadedSourceYears);

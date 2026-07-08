@@ -321,10 +321,10 @@ class ReconcileTable extends ReconcileProcessor {
       const ledger = batches.ledger;
 
       batches.groupOffsetsByVal.forEach((offsets, groupId) => {
-        ledger.setBatchedValuesByLabel("Group", groupId, offsets);
+        ledger.setValueByLabelAndRowOffsets("Group", groupId, offsets);
       });
       batches.fyOffsetsByVal.forEach((offsets, fyVal) => {
-        ledger.setBatchedValuesByLabel("FY", fyVal, offsets);
+        ledger.setValueByLabelAndRowOffsets("FY", fyVal, offsets);
       });
 
       myLog("info", "Wrote Group (and FY if applicable) back to ledger %s.", ledgerName);

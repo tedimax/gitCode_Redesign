@@ -44,14 +44,14 @@ class GenerateTable extends ImportTable {
 
     if (labels.includes("Group") && !this._compiledFormulaMap.has("Group")) {
       myLog("trace", "GenerateTable: Injecting fallback formula for Group");
-      this._rawFormulaMap.set("Group", 'targetVal("Group", calc.PK)');
-      this._compiledFormulaMap.set("Group", new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return utils.targetVal("Group", calc)'));
+      this._rawFormulaMap.set("Group", 'lookup("Reconciliation_Groups", "PK", "Group", calc.PK)');
+      this._compiledFormulaMap.set("Group", new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return utils.lookup("Reconciliation_Groups", "PK", "Group", calc.PK)'));
     }
 
     if (labels.includes("Cleared") && !this._compiledFormulaMap.has("Cleared")) {
       myLog("trace", "GenerateTable: Injecting fallback formula for Cleared");
-      this._rawFormulaMap.set("Cleared", 'targetVal("Cleared", calc.PK)');
-      this._compiledFormulaMap.set("Cleared", new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return utils.targetVal("Cleared", calc)'));
+      this._rawFormulaMap.set("Cleared", 'lookup("Reconciliation_Groups", "PK", "Cleared", calc.PK)');
+      this._compiledFormulaMap.set("Cleared", new Function('rowOff', 'calc', 'utils', 'props', 'sourceRow', 'sourceLabels', 'return utils.lookup("Reconciliation_Groups", "PK", "Cleared", calc.PK)'));
     }
   }
 

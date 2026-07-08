@@ -377,8 +377,10 @@ function markAllDirty() {
 
 function resetFYWindow(longName) {
   initialize();
-  const year = Temporal.PlainDate.from(Registry.getSheetConfig(longName).FromFY).year;
-  _calculateAndSaveWindow(longName, year);
+  if (Registry.getSheetConfig(longName).DeltaDate) {
+    const year = (new Date((Registry.getSheetConfig(longName).FromFY)).getFullYear() + 1).toString();
+    _calculateAndSaveWindow(longName, year);
+  }
 }
 
 /**
@@ -591,12 +593,11 @@ function runRepairSingle(longName) {
     return;
   }
 
-  // Repair manager should force update mode EXCEPT for FileTable (Drive staging) and GenerateTable sheets,
+  // Repair manager should force update mode EXCEPT for FileTable (Drive staging) 
   // which must always be replaced.
   const config = Registry.getSheetConfig(longName);
   const isFileTable = (config && config.SheetType === "FileTable") || longName.startsWith("ImportsArchive_File");
-  const isGenerateTable = (config && config.SheetType === "GenerateTable") || longName === "Ledgers_GeneratedTransactions";
-  const forceUpdate = !isFileTable && !isGenerateTable;
+  const forceUpdate = !isFileTable;
 
   _importNamedSheet(longName, forceUpdate, true); // Suppress Alerts
 }

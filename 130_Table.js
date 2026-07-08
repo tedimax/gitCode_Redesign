@@ -547,15 +547,18 @@ class Table extends Sheet {
     if (!this._lookupCacheMap.has(cacheKey)) {
 
       // Fail safely if the columns don't physically exist in the sheet
-      if (this.column[keyCol] === undefined || this.column[valCol] === undefined) return "";
+      if (this.column[keyCol] === undefined || this.column[valCol] === undefined) {
+        myLog("warning", "Lookup on %s failed: column '%s' or '%s' not found.", this.longName, keyCol, valCol);
+        return "";
+      }
 
       const lookupMap = new Map();
       this._lookupCacheMap.set(cacheKey, lookupMap);
 
       if (this.longName === "Reconciliation_Groups") {
         this._lookupLastRowFetched = this.getLastRowIndex();
-        myLog("trace", "Registry: Initialized backward chunk lookup cache for %s (%s->%s), bottom row is %d",
-          this.longName, keyCol, valCol, this._lookupLastRowFetched);
+        myLog("info", "Reconciliation_Groups: Initializing lookup cache for (%s->%s), bottom row is %d",
+          keyCol, valCol, this._lookupLastRowFetched);
       } else {
         // Force the RAM window to load in full for other smaller config tables
         this.fetch(this.firstDataRowIndex);
@@ -581,7 +584,7 @@ class Table extends Sheet {
         const startRow = Math.max(this.firstDataRowIndex, this._lookupLastRowFetched - chunkSize + 1);
         const numRows = this._lookupLastRowFetched - startRow + 1;
 
-        myLog("trace", "Groups Lookup: Scanning backward chunk from row %d to %d for Group '%s'...", startRow, this._lookupLastRowFetched, searchVal);
+        myLog("trace", "Groups Lookup: Scanning backward chunk from row %d to %d for Group/PK '%s'...", startRow, this._lookupLastRowFetched, searchVal);
 
         this.fetch(startRow, numRows);
 
@@ -597,7 +600,11 @@ class Table extends Sheet {
     }
 
     // 4. Cache Hit: Instantly retrieve the value in O(1) time
-    return lookupMap.get(searchKeyLower) || "";
+    const result = lookupMap.get(searchKeyLower);
+    if (this.longName === "Reconciliation_Groups") {
+      myLog("trace", "Reconciliation_Groups Lookup: keyCol='%s' | valCol='%s' | search='%s' -> result='%s'", keyCol, valCol, searchVal, result !== undefined ? result : "(not found)");
+    }
+    return result || "";
   }
 
   /**
