@@ -11,8 +11,8 @@ class CalendarTable extends UpdateTable {
     const day2Millisecond = 24 * 60 * 60 * 1000;
     
     // Resolve past/future bounds using config, table properties, or CONFIG_CONSTANTS fallbacks
-    const pastDays = Number(config.past !== undefined ? config.past : (this.getProperty("past") !== null ? this.getProperty("past") : CONFIG_CONSTANTS.SETMORE_PAST));
-    const futureDays = Number(config.future !== undefined ? config.future : (this.getProperty("future") !== null ? this.getProperty("future") : CONFIG_CONSTANTS.SETMORE_FUTURE));
+    const pastDays =  CONFIG_CONSTANTS.SETMORE_PAST;
+    const futureDays =  CONFIG_CONSTANTS.SETMORE_FUTURE;
     
     this.appointments = [];
     this.today = new Date();

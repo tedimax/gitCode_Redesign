@@ -13,7 +13,7 @@ class SetmoreProvider extends CalendarTable {
     // Resolve Setmore specific parameters (Constructor Option -> Registry Property -> CONFIG_CONSTANTS default)
     this.refreshToken = config.refreshToken || this.getProperty("refreshToken") || CONFIG_CONSTANTS.SETMORE_REFRESH_TOKEN;
     this.staffName = config.staffName || this.getProperty("staffName") || CONFIG_CONSTANTS.SETMORE_STAFF_NAME;
-    this.tuyaPINLength = Number(config.tuyaPINLength !== undefined ? config.tuyaPINLength : (this.getProperty("tuyaPINLength") !== null ? this.getProperty("tuyaPINLength") : CONFIG_CONSTANTS.TUYA_PIN_LENGTH));
+    this.tuyaPINLength = CONFIG_CONSTANTS.TUYA_PIN_LENGTH;
 
     this.accessToken = this.getSetmoreAccessToken();
     this.staffKey = this.getStaffKeyByName(this.staffName);
